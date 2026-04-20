@@ -1,7 +1,7 @@
 {
   "name": "lia-customer-agents",
   "version": "0.1.0",
-  "description": "Biblioteca de agentes jurídicos (orquestrador + triagem + consulta processual) com OpenAI Agents SDK, consumível pela edge function existente.",
+  "description": "Cloud Function HTTP de agentes jurídicos (orquestrador + triagem + consulta processual) com OpenAI Agents SDK.",
   "type": "module",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
@@ -9,6 +9,14 @@
     ".": {
       "types": "./dist/index.d.ts",
       "import": "./dist/index.js"
+    },
+    "./server": {
+      "types": "./dist/http/server.d.ts",
+      "import": "./dist/http/server.js"
+    },
+    "./function": {
+      "types": "./dist/http/function.d.ts",
+      "import": "./dist/http/function.js"
     }
   },
   "files": [
@@ -21,18 +29,28 @@
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "test:watch": "vitest",
-    "lint": "tsc --noEmit"
+    "lint": "tsc --noEmit",
+    "start": "node dist/http/server.js",
+    "dev": "tsx watch src/http/server.ts",
+    "start:function": "functions-framework --target=runAgentsHttp --source=dist/http/function.js --port=${PORT:-3333}"
   },
   "dependencies": {
+    "@google-cloud/functions-framework": "^5.0.2",
     "@openai/agents": "^0.8.4",
+    "dotenv": "^17.4.2",
+    "express": "^5.2.1",
     "zod": "^4.3.6"
   },
   "devDependencies": {
+    "@types/express": "^5.0.6",
     "@types/node": "^22.0.0",
+    "@types/supertest": "^7.2.0",
+    "supertest": "^7.2.2",
+    "tsx": "^4.21.0",
     "typescript": "^5.6.0",
     "vitest": "^4.1.4"
   },
   "engines": {
-    "node": ">=18.17"
+    "node": ">=20"
   }
 }

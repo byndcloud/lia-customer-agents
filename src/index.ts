@@ -24,3 +24,16 @@ export {
 export { buildOrchestratorAgent } from "./agents/orchestrator.agent.js";
 export { buildTriageAgent } from "./agents/triage.agent.js";
 export { buildProcessInfoAgent } from "./agents/process-info.agent.js";
+
+export { buildApp, type BuildAppParams } from "./http/app.js";
+export {
+  AuthConfigError,
+  UnauthorizedError,
+  extractBearerToken,
+  verifyApiSecret,
+  verifySupabaseKey,
+  type AuthResult,
+  type SupabaseAuthRole,
+  type VerifyApiSecretParams,
+  type VerifySupabaseKeyParams,
+} from "./http/auth.js";
