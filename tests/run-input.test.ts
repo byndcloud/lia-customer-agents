@@ -35,12 +35,25 @@ describe("RunInputSchema", () => {
     ).toThrow();
   });
 
-  it("rejects missing required ids", () => {
+  it("rejects missing organizationId", () => {
     expect(() =>
       RunInputSchema.parse({ ...validInput, organizationId: "" }),
     ).toThrow();
-    expect(() =>
-      RunInputSchema.parse({ ...validInput, clientId: undefined }),
-    ).toThrow();
+  });
+
+  it("accepts missing clientId (triagem sem pessoa vinculada)", () => {
+    const parsed = RunInputSchema.parse({
+      ...validInput,
+      clientId: undefined,
+    });
+    expect(parsed.clientId).toBeUndefined();
+  });
+
+  it("treats empty clientId as omitted", () => {
+    const parsed = RunInputSchema.parse({
+      ...validInput,
+      clientId: "",
+    });
+    expect(parsed.clientId).toBeUndefined();
   });
 });

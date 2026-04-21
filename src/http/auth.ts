@@ -103,34 +103,3 @@ export function extractBearerToken(
   const match = /^Bearer\s+(.+)$/i.exec(header.trim());
   return match?.[1]?.trim();
 }
-
-export interface VerifyApiSecretParams {
-  /** Header `Authorization` (ex.: `Bearer <token>`). Só o token após `Bearer` é validado. */
-  readonly authorizationHeader: string | undefined;
-  /** Valor esperado de `API_SECRET_TOKEN` no env. */
-  readonly expectedToken: string | undefined;
-}
-
-/**
- * Valida o segredo **server-to-server** em **toda** requisição: o cliente envia
- * `Authorization: Bearer <API_SECRET_TOKEN>` e comparamos o token (após
- * `Bearer`) com `API_SECRET_TOKEN` no env. Comparação time-safe.
- */
-export function verifyApiSecret(params: VerifyApiSecretParams): void {
-  const { authorizationHeader, expectedToken } = params;
-
-  if (!expectedToken) {
-    throw new AuthConfigError(
-      "API_SECRET_TOKEN is not configured. Set the env var to enable auth.",
-    );
-  }
-
-  const token = extractBearerToken(authorizationHeader);
-  if (!token) {
-    throw new UnauthorizedError("missing_bearer_token");
-  }
-
-  if (!safeEqual(token, expectedToken)) {
-    throw new UnauthorizedError("invalid_api_secret_token");
-  }
-}

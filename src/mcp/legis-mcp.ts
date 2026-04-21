@@ -25,8 +25,8 @@ export interface BuildLegisMcpToolParams {
  * Monta os headers enviados ao MCP para cada execução.
  *
  * Regras:
- * - `X-Conversation-Id` sempre enviado.
- * - Demais identificadores são enviados apenas quando presentes.
+ * - `X-Conversation-Id` e `X-Organization-Id` sempre enviados.
+ * - `X-Client-Id` só quando há cliente identificado no contexto.
  * - `Authorization` é adicionado apenas quando `MCP_SERVER_API_KEY` existir.
  */
 export function buildLegisMcpHeaders(
@@ -36,8 +36,11 @@ export function buildLegisMcpHeaders(
   const headers: Record<string, string> = {
     "X-Conversation-Id": context.conversationId,
     "X-Organization-Id": context.organizationId,
-    "X-Client-Id": context.clientId,
   };
+
+  if (context.clientId) {
+    headers["X-Client-Id"] = context.clientId;
+  }
 
   if (context.calendarConnectionId) {
     headers["X-Calendar-Connection-Id"] = context.calendarConnectionId;

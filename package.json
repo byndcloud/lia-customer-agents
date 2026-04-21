@@ -37,13 +37,15 @@
   "dependencies": {
     "@google-cloud/functions-framework": "^5.0.2",
     "@openai/agents": "^0.8.4",
+    "@supabase/supabase-js": "^2.104.0",
     "dotenv": "^17.4.2",
     "express": "^5.2.1",
+    "openai": "^6.34.0",
     "zod": "^4.3.6"
   },
   "devDependencies": {
     "@types/express": "^5.0.6",
-    "@types/node": "^22.0.0",
+    "@types/node": "^22.19.17",
     "@types/supertest": "^7.2.0",
     "supertest": "^7.2.2",
     "tsx": "^4.21.0",

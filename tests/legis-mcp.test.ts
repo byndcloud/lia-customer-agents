@@ -39,6 +39,16 @@ describe("buildLegisMcpHeaders", () => {
     });
   });
 
+  it("omits X-Client-Id when clientId is undefined", () => {
+    const headers = buildLegisMcpHeaders({
+      env: envWithoutAuth,
+      context: { ...baseContext, clientId: undefined },
+    });
+    expect(headers["X-Client-Id"]).toBeUndefined();
+    expect(headers["X-Conversation-Id"]).toBe("conv-1");
+    expect(headers["X-Organization-Id"]).toBe("org-1");
+  });
+
   it("adds X-Calendar-Connection-Id when available", () => {
     const headers = buildLegisMcpHeaders({
       env: envWithoutAuth,

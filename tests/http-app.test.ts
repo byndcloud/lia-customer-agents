@@ -4,17 +4,28 @@ import { buildApp } from "../src/http/app.js";
 import type { EnvConfig } from "../src/config/env.js";
 import type { RunInput, RunOutput } from "../src/types.js";
 
-const API_SECRET = "shared-secret-token-cccccccccccccccccccccccccccccccc";
+const ANON_KEY = "anon-key-test-value-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+const SERVICE_ROLE_KEY =
+  "service-role-key-test-value-bbbbbbbbbbbbbbbbbbb";
 
 const env: EnvConfig = {
   aiModel: "gpt-test",
+  openaiApiKey: "sk-test",
   mcpServerUrl: "https://mcp.example.com",
   mcpServerApiKey: "mcp-key",
   supabaseUrl: "https://proj.supabase.co",
-  supabaseAnonKey: "anon-key-test-value-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-  supabaseServiceRoleKey:
-    "service-role-key-test-value-bbbbbbbbbbbbbbbbbbb",
-  apiSecretToken: API_SECRET,
+  supabaseAnonKey: ANON_KEY,
+  supabaseServiceRoleKey: SERVICE_ROLE_KEY,
+  evolutionApiUrl: "https://evo.example.com",
+  evolutionApiKey: "evo-key",
+  googleServiceAccountKey: undefined,
+  googleCloudTasksLocation: "us-central1",
+  chatbotQueueName: "lia",
+  selfPublicBaseUrl: "https://self.example.com",
+  chatbotQueueDelaySeconds: 22,
+  whatsappStorageBucket: "whatsapp-files",
+  followup30minSeconds: 1800,
+  followup24hSeconds: 86400,
   port: 0,
 };
 
@@ -25,8 +36,12 @@ const validBody: RunInput = {
   clientId: "cli-1",
 };
 
-function authHeaders() {
-  return { Authorization: `Bearer ${API_SECRET}` };
+function authHeadersAnon() {
+  return { Authorization: `Bearer ${ANON_KEY}` };
+}
+
+function authHeadersServiceRole() {
+  return { Authorization: `Bearer ${SERVICE_ROLE_KEY}` };
 }
 
 function buildFakeRunAgents(output?: Partial<RunOutput>) {
@@ -44,7 +59,7 @@ function buildFakeRunAgents(output?: Partial<RunOutput>) {
   return vi.fn(async () => ({ ...defaultOutput, ...output }));
 }
 
-describe("Authorization: Bearer + API_SECRET_TOKEN", () => {
+describe("Authorization: Bearer = Supabase anon ou service_role", () => {
   it("returns 401 when Authorization is missing on /run", async () => {
     const app = buildApp({
       env,
@@ -57,7 +72,7 @@ describe("Authorization: Bearer + API_SECRET_TOKEN", () => {
     expect(res.body.error).toBe("unauthorized");
   });
 
-  it("returns 401 when Bearer token does not match API_SECRET_TOKEN", async () => {
+  it("returns 401 when Bearer token does not match any configured key", async () => {
     const app = buildApp({
       env,
       runAgentsImpl: buildFakeRunAgents() as never,
@@ -82,15 +97,19 @@ describe("Authorization: Bearer + API_SECRET_TOKEN", () => {
     expect(res.status).toBe(401);
   });
 
-  it("returns 500 when API_SECRET_TOKEN is not configured", async () => {
+  it("returns 500 when neither Supabase key is configured", async () => {
     const app = buildApp({
-      env: { ...env, apiSecretToken: undefined },
+      env: {
+        ...env,
+        supabaseAnonKey: undefined,
+        supabaseServiceRoleKey: undefined,
+      },
       runAgentsImpl: buildFakeRunAgents() as never,
     });
 
     const res = await request(app)
       .get("/health")
-      .set(authHeaders());
+      .set(authHeadersAnon());
 
     expect(res.status).toBe(500);
     expect(res.body.error).toBe("server_misconfigured");
@@ -98,13 +117,13 @@ describe("Authorization: Bearer + API_SECRET_TOKEN", () => {
 });
 
 describe("POST /run", () => {
-  it("returns 200 when Bearer matches API_SECRET_TOKEN and body is valid", async () => {
+  it("returns 200 when Bearer is anon key and body is valid", async () => {
     const runAgentsImpl = buildFakeRunAgents();
     const app = buildApp({ env, runAgentsImpl: runAgentsImpl as never });
 
     const res = await request(app)
       .post("/run")
-      .set(authHeaders())
+      .set(authHeadersAnon())
       .send(validBody);
 
     expect(res.status).toBe(200);
@@ -118,6 +137,18 @@ describe("POST /run", () => {
     );
   });
 
+  it("returns 200 when Bearer is service_role key", async () => {
+    const runAgentsImpl = buildFakeRunAgents();
+    const app = buildApp({ env, runAgentsImpl: runAgentsImpl as never });
+
+    const res = await request(app)
+      .post("/run")
+      .set(authHeadersServiceRole())
+      .send(validBody);
+
+    expect(res.status).toBe(200);
+  });
+
   it("returns 400 when body fails Zod validation", async () => {
     const app = buildApp({
       env,
@@ -126,7 +157,7 @@ describe("POST /run", () => {
 
     const res = await request(app)
       .post("/run")
-      .set(authHeaders())
+      .set(authHeadersAnon())
       .send({ ...validBody, userMessage: "" });
 
     expect(res.status).toBe(400);
@@ -136,13 +167,13 @@ describe("POST /run", () => {
 });
 
 describe("GET /health", () => {
-  it("returns 200 when Bearer matches API_SECRET_TOKEN", async () => {
+  it("returns 200 when Bearer matches a configured Supabase key", async () => {
     const app = buildApp({
       env,
       runAgentsImpl: buildFakeRunAgents() as never,
     });
 
-    const res = await request(app).get("/health").set(authHeaders());
+    const res = await request(app).get("/health").set(authHeadersAnon());
     expect(res.status).toBe(200);
     expect(res.body).toEqual({ status: "ok" });
   });

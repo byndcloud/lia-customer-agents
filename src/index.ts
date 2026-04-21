@@ -3,8 +3,10 @@ export type { RunAgentsOptions } from "./runtime/run-agents.js";
 
 export {
   AgentIdSchema,
+  AgentInputItemSchema,
   RunInputSchema,
   type AgentId,
+  type AgentInputItem,
   type AgentRunContext,
   type RunInput,
   type RunOutput,
@@ -30,10 +32,8 @@ export {
   AuthConfigError,
   UnauthorizedError,
   extractBearerToken,
-  verifyApiSecret,
   verifySupabaseKey,
   type AuthResult,
   type SupabaseAuthRole,
-  type VerifyApiSecretParams,
   type VerifySupabaseKeyParams,
 } from "./http/auth.js";

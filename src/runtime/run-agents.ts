@@ -1,4 +1,4 @@
-import { run } from "@openai/agents";
+import { run, type AgentInputItem } from "@openai/agents";
 import { buildOrchestratorAgent } from "../agents/orchestrator.agent.js";
 import { PROCESS_INFO_AGENT_NAME } from "../agents/instructions/process-info.instructions.js";
 import { TRIAGE_AGENT_NAME } from "../agents/instructions/triage.instructions.js";
@@ -48,7 +48,14 @@ export async function runAgents(
 
   const orchestrator = buildOrchestratorAgent({ env, context });
 
-  const result = await run(orchestrator, input.userMessage, {
+  // O SDK aceita `string | AgentInputItem[]`. Quando o chamador (rota
+  // `generate-ai-response`) já agregou múltiplas mensagens, repassamos como
+  // array para preservar a separação semântica de cada mensagem do batch.
+  const runInput: string | AgentInputItem[] = input.inputs
+    ? (input.inputs as unknown as AgentInputItem[])
+    : (input.userMessage as string);
+
+  const result = await run(orchestrator, runInput, {
     context,
     ...(input.previousResponseId
       ? { previousResponseId: input.previousResponseId }

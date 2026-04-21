@@ -8,12 +8,18 @@ import express, {
 import { ZodError } from "zod";
 import { loadEnv, type EnvConfig } from "../config/env.js";
 import { runAgents } from "../runtime/run-agents.js";
-import { RunInputSchema } from "../types.js";
 import {
   AuthConfigError,
   UnauthorizedError,
-  verifyApiSecret,
+  extractBearerToken,
+  verifySupabaseKey,
 } from "./auth.js";
+import { buildDeliverResponseRouter } from "./routes/deliverResponse.js";
+import { buildFollowup24hRouter } from "./routes/followup24h.js";
+import { buildFollowup30minRouter } from "./routes/followup30min.js";
+import { buildGenerateAiResponseRouter } from "./routes/generateAiResponse.js";
+import { buildRunRouter } from "./routes/run.js";
+import { buildWebhookEvolutionRouter } from "./routes/webhookEvolution.js";
 
 /**
  * Dependências injetáveis no app (facilita testes).
@@ -29,15 +35,16 @@ export interface BuildAppParams {
  * Monta a instância Express da Cloud Function.
  *
  * Rotas expostas:
- * - `GET /health`  — liveness probe (exige `Authorization: Bearer <API_SECRET_TOKEN>`).
- * - `POST /run`    — executa os agentes (mesmo Bearer; token = `API_SECRET_TOKEN`).
+ *  - `GET  /health`               — liveness probe.
+ *  - `POST /run`                  — executa os agentes (uso direto/testes).
+ *  - `POST /webhook-evolution`    — recebe webhook da Evolution.
+ *  - `POST /generate-ai-response` — disparado pelo Cloud Tasks (batch agregado).
+ *  - `POST /deliver-response`     — entrega mensagem via Evolution.
+ *  - `POST /followup-30min`       — disparado pelo `pg_cron`.
+ *  - `POST /followup-24h`         — disparado pelo `pg_cron`.
  *
- * Responsabilidades:
- *  - Validar em **todas** as rotas: `Authorization: Bearer <token>` onde
- *    `<token>` bate com `API_SECRET_TOKEN` (time-safe).
- *  - Parse do body JSON.
- *  - Validação do `RunInput` via Zod no `POST /run`.
- *  - Tradução de erros em respostas HTTP consistentes.
+ * **Todas** as rotas exigem `Authorization: Bearer <SUPABASE_ANON_KEY | SUPABASE_SERVICE_ROLE_KEY>`
+ * (comparação time-safe com o env). Erros são mapeados em `errorHandler`.
  */
 export function buildApp(params: BuildAppParams = {}): Express {
   const env = params.env ?? loadEnv();
@@ -45,13 +52,15 @@ export function buildApp(params: BuildAppParams = {}): Express {
 
   const app = express();
   app.disable("x-powered-by");
+  (app.locals as { env: EnvConfig }).env = env;
   app.use(express.json({ limit: "1mb" }));
 
   app.use((req: Request, _res: Response, next: NextFunction) => {
     try {
-      verifyApiSecret({
+      verifySupabaseKey({
         authorizationHeader: req.header("authorization"),
-        expectedToken: env.apiSecretToken,
+        anonKey: env.supabaseAnonKey,
+        serviceRoleKey: env.supabaseServiceRoleKey,
       });
       next();
     } catch (error) {
@@ -63,17 +72,15 @@ export function buildApp(params: BuildAppParams = {}): Express {
     res.status(200).json({ status: "ok" });
   });
 
-  app.post("/run", async (req: Request, res: Response, next: NextFunction) => {
-    try {
-      const input = RunInputSchema.parse(req.body);
-
-      const result = await runImpl(input, { env });
-
-      res.status(200).json(result);
-    } catch (error) {
-      next(error);
-    }
-  });
+  app.use("/run", buildRunRouter({ env, runAgentsImpl: runImpl }));
+  app.use("/webhook-evolution", buildWebhookEvolutionRouter({ env }));
+  app.use(
+    "/generate-ai-response",
+    buildGenerateAiResponseRouter({ env, runAgentsImpl: runImpl }),
+  );
+  app.use("/deliver-response", buildDeliverResponseRouter({ env }));
+  app.use("/followup-30min", buildFollowup30minRouter({ env }));
+  app.use("/followup-24h", buildFollowup24hRouter({ env }));
 
   app.use(errorHandler);
 
@@ -92,14 +99,19 @@ function errorHandler(
   _next: NextFunction,
 ): void {
   if (err instanceof UnauthorizedError) {
-    logIncomingRequest(req, "unauthorized");
+    const envConfig = (req.app.locals as { env?: EnvConfig }).env;
+    logIncomingRequest(req, "unauthorized", {
+      authError: true,
+      unauthorizedReason: err.reason,
+      ...(envConfig !== undefined ? { env: envConfig } : {}),
+    });
     logError("unauthorized", err.reason);
     res.status(401).json({ error: "unauthorized" });
     return;
   }
 
   if (err instanceof AuthConfigError) {
-    logIncomingRequest(req, "auth_config_error");
+    logIncomingRequest(req, "auth_config_error", { authError: true });
     logError("auth_config_error", err.message);
     res.status(500).json({ error: "server_misconfigured" });
     return;
@@ -131,13 +143,32 @@ const SENSITIVE_HEADER_NAMES = new Set([
 ]);
 
 /**
- * Registra o que chegou na requisição (útil para depurar auth). `authorization`
- * é mascarado; use `LOG_SENSITIVE_REQUEST=1` para logar o valor bruto (só em
- * ambiente controlado).
+ * Registra o que chegou na requisição (útil para depurar auth).
+ *
+ * - Em `headers`, `authorization` fica mascarado salvo `LOG_SENSITIVE_REQUEST=1`.
+ * - Em erros de auth (`authError`), o campo `authorization_received` repete o
+ *   header completo por padrão para depuração. Em produção, defina
+ *   `REDACT_AUTHORIZATION_IN_LOGS=1` para omitir.
+ * - Para `invalid_bearer_token`, `bearer_token_debug` inclui o token após
+ *   `Bearer` (mesmo valor usado na comparação) e os tamanhos das chaves no env.
  */
-function logIncomingRequest(req: Request, context: string): void {
+function logIncomingRequest(
+  req: Request,
+  context: string,
+  options: {
+    authError?: boolean;
+    unauthorizedReason?: string;
+    env?: EnvConfig;
+  } = {},
+): void {
   const logSecrets = process.env.LOG_SENSITIVE_REQUEST === "1";
-  const payload = {
+  const redactAuthInPlainField =
+    process.env.REDACT_AUTHORIZATION_IN_LOGS === "1";
+  const rawAuth = headerValueToString(req.headers.authorization);
+  const showPlain =
+    !redactAuthInPlainField || logSecrets;
+
+  const payload: Record<string, unknown> = {
     level: "debug",
     event: "incoming_request",
     context,
@@ -147,6 +178,49 @@ function logIncomingRequest(req: Request, context: string): void {
     headers: redactHeaders(req.headers, logSecrets),
     body: req.body,
   };
+
+  if (options.authError && rawAuth !== undefined) {
+    if (redactAuthInPlainField && !logSecrets) {
+      payload.authorization_received = `[redacted len=${rawAuth.length}]`;
+    } else {
+      payload.authorization_received = rawAuth;
+    }
+  }
+
+  if (
+    options.unauthorizedReason === "invalid_bearer_token" &&
+    options.env
+  ) {
+    const token = extractBearerToken(rawAuth);
+    const { supabaseAnonKey: anon, supabaseServiceRoleKey: sr } =
+      options.env;
+    payload.bearer_token_debug = {
+      // Mesmo string que verifySupabaseKey compara com anon/service_role.
+      bearer_token_extracted: token
+        ? showPlain
+          ? token
+          : `[redacted len=${token.length}]`
+        : null,
+      bearer_token_length: token?.length ?? 0,
+      env_key_lengths: {
+        anon_key: anon?.length ?? 0,
+        service_role_key: sr?.length ?? 0,
+      },
+      lengths_match_hint:
+        token &&
+        anon &&
+        token.length === anon.length &&
+        token !== anon
+          ? "same_length_as_anon_but_bytes_differ_check_whitespace_encoding"
+          : token &&
+              sr &&
+              token.length === sr.length &&
+              token !== sr
+            ? "same_length_as_service_role_but_bytes_differ"
+            : undefined,
+    };
+  }
+
   console.error(`\n${JSON.stringify(payload, null, 2)}\n`);
 }
 
