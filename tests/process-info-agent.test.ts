@@ -22,6 +22,7 @@ const baseContext: AgentRunContext = {
   clientId: "cli-1",
   calendarConnectionId: undefined,
   extra: undefined,
+  continuesOpenAiAgentChain: false,
 };
 
 const fullConfig: ChatbotAiConfig = {

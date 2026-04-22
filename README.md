@@ -127,7 +127,7 @@ Códigos de erro:
 | `OPENAI_API_KEY` | **sim** | Usada pelo Agents SDK e pelo Whisper (transcrição de áudio). |
 | `MCP_SERVER_URL` | sim (para consulta processual) | URL do servidor MCP `legis-mcp`. |
 | `MCP_SERVER_API_KEY` | não | Quando presente, é enviado como `Authorization: Bearer ...` para o MCP. |
-| `AI_MODEL` | não | Default: `gpt-5-mini`. |
+| `AI_MODEL` | não | Default: `gpt-5`. |
 | `PORT` | não | Default local: `3333`. Em Cloud Run, a plataforma define `PORT`. |
 
 ### Supabase (persistência + storage de mídia)
@@ -180,7 +180,7 @@ Códigos de erro:
      --source=. \
      --entry-point=runAgentsHttp \
      --trigger-http \
-     --set-env-vars="AI_MODEL=gpt-5-mini" \
+     --set-env-vars="AI_MODEL=gpt-5" \
      --set-secrets="OPENAI_API_KEY=openai-api-key:latest,SUPABASE_URL=supabase-url:latest,SUPABASE_SERVICE_ROLE_KEY=supabase-service-role-key:latest,SUPABASE_ANON_KEY=supabase-anon-key:latest,MCP_SERVER_URL=mcp-url:latest,MCP_SERVER_API_KEY=mcp-key:latest"
    ```
 

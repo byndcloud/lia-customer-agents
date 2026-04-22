@@ -1,6 +1,5 @@
 import type { EnvConfig } from "../config/env.js";
 import { getSupabaseClient } from "../db/client.js";
-import { getLastConversationResponse } from "../db/responses.js";
 
 /**
  * Decide qual `previousResponseId` usar antes de chamar os agentes.
@@ -15,6 +14,11 @@ import { getLastConversationResponse } from "../db/responses.js";
 export interface LastResponseResult {
   lastResponseId: string | null;
   isNewService: boolean;
+  chainDecisionReason:
+    | "no_active_service"
+    | "no_response_row_for_service"
+    | "query_error_fallback_to_null"
+    | "response_found";
 }
 
 interface ActiveServiceRow {
@@ -26,7 +30,7 @@ interface ActiveServiceRow {
 async function getActiveService(
   conversaId: string,
   env?: EnvConfig,
-): Promise<ActiveServiceRow | null> {
+): Promise<{ data: ActiveServiceRow | null; hadError: boolean }> {
   const supabase = getSupabaseClient(env);
   const { data, error } = await supabase
     .from("whatsapp_atendimentos")
@@ -38,17 +42,17 @@ async function getActiveService(
 
   if (error) {
     console.error("❌ Erro ao buscar atendimento ativo:", error);
-    return null;
+    return { data: null, hadError: true };
   }
 
-  return data;
+  return { data, hadError: false };
 }
 
 async function getLastResponseForService(
   conversaId: string,
   atendimentoIniciado: string,
   env?: EnvConfig,
-): Promise<string | null> {
+): Promise<{ responseId: string | null; foundRow: boolean; hadError: boolean }> {
   const supabase = getSupabaseClient(env);
 
   type Row = {
@@ -71,10 +75,30 @@ async function getLastResponseForService(
 
   if (error) {
     console.error("❌ Erro ao buscar último response:", error);
-    return getLastConversationResponse(conversaId, env);
+    return { responseId: null, foundRow: false, hadError: true };
   }
 
-  return data?.response_id ?? null;
+  return {
+    responseId: data?.response_id ?? null,
+    foundRow: data !== null && data !== undefined,
+    hadError: false,
+  };
+}
+
+function logPreviousResponseDecision(params: {
+  conversaId: string;
+  hasActiveService: boolean;
+  foundResponseRow: boolean;
+  previousResponseIdPresent: boolean;
+  reason: LastResponseResult["chainDecisionReason"];
+}): void {
+  console.log(
+    JSON.stringify({
+      level: "info",
+      event: "previous_response_id_decision",
+      ...params,
+    }),
+  );
 }
 
 /**
@@ -87,17 +111,43 @@ export async function getLastResponseIfActive(
   conversaId: string,
   env?: EnvConfig,
 ): Promise<LastResponseResult> {
-  const activeService = await getActiveService(conversaId, env);
+  const activeServiceResult = await getActiveService(conversaId, env);
+  const activeService = activeServiceResult.data;
 
   if (!activeService) {
-    return { lastResponseId: null, isNewService: true };
+    const reason: LastResponseResult["chainDecisionReason"] =
+      "no_active_service";
+    logPreviousResponseDecision({
+      conversaId,
+      hasActiveService: false,
+      foundResponseRow: false,
+      previousResponseIdPresent: false,
+      reason,
+    });
+    return { lastResponseId: null, isNewService: true, chainDecisionReason: reason };
   }
 
-  const lastResponseId = await getLastResponseForService(
+  const responseResult = await getLastResponseForService(
     conversaId,
     activeService.iniciado_em,
     env,
   );
+  const lastResponseId = responseResult.responseId;
 
-  return { lastResponseId, isNewService: false };
+  const reason: LastResponseResult["chainDecisionReason"] =
+    responseResult.hadError
+      ? "query_error_fallback_to_null"
+      : lastResponseId
+        ? "response_found"
+        : "no_response_row_for_service";
+
+  logPreviousResponseDecision({
+    conversaId,
+    hasActiveService: true,
+    foundResponseRow: responseResult.foundRow,
+    previousResponseIdPresent: Boolean(lastResponseId),
+    reason,
+  });
+
+  return { lastResponseId, isNewService: false, chainDecisionReason: reason };
 }

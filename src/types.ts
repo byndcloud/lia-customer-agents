@@ -1,7 +1,7 @@
 import { z } from "zod";
 
 /**
- * Identificadores dos agentes suportados no orquestrador.
+ * Identificadores dos agentes do fluxo principal (triagem e consulta processual).
  *
  * `triage` — Lia de primeiro atendimento (triagem de casos)
  * `process_info` — Lia de consulta a processos já existentes
@@ -33,9 +33,10 @@ export type AgentInputItem = z.infer<typeof AgentInputItemSchema>;
  * `inputs` (caminho novo, usado pelo `generate-ai-response` para preservar a
  * separação semântica das mensagens agregadas — texto + transcrições).
  *
- * `organizationId` e `conversationId` são obrigatórios. `clientId` é opcional:
- * conversas novas ou número ainda não vinculado a `pessoas` não têm pessoa —
- * o agente de triagem conduz o fluxo (ex.: perguntar se já é cliente e CPF).
+ * `organizationId` e `conversationId` são obrigatórios. `clientId` é opcional
+ * (pessoa ainda não vinculada no cadastro). O **orquestrador LLM** combina
+ * `clientId`, `previousResponseId` e o texto do usuário para decidir o handoff
+ * entre triagem e consulta processual.
  */
 export const RunInputSchema = z
   .object({
@@ -124,4 +125,11 @@ export interface AgentRunContext {
   clientId: string | undefined;
   calendarConnectionId: string | undefined;
   extra: Record<string, unknown> | undefined;
+  /**
+   * `true` quando este run encadeia `previousResponseId` da OpenAI (continua
+   * a mesma cadeia técnica de respostas do SDK). `false` só indica que **não**
+   * há esse encadeamento nesta chamada — não significa primeira mensagem do
+   * cliente nem ausência de histórico no canal.
+   */
+  continuesOpenAiAgentChain: boolean;
 }

@@ -1,4 +1,9 @@
-import { Router, type Request, type Response } from "express";
+import {
+  Router,
+  type NextFunction,
+  type Request,
+  type Response,
+} from "express";
 import type { EnvConfig } from "../../config/env.js";
 import { getSupabaseClient } from "../../db/client.js";
 import { ensureActiveService } from "../../db/atendimentos.js";
@@ -22,6 +27,23 @@ const CHATBOT_AGGREGATION_WINDOW_SEC = 20;
 
 /** Limite de re-enfileiramentos quando a janela ainda está aberta. */
 const CHATBOT_QUEUE_SELF_RETRY_MAX = 12;
+
+/**
+ * Log estruturado (uma linha JSON) para depuração do fluxo
+ * `POST /generate-ai-response`.
+ */
+function logGenerateAi(
+  event: string,
+  fields: Record<string, unknown>,
+  level: "info" | "warn" = "info",
+): void {
+  const line = JSON.stringify({ level, event, ...fields });
+  if (level === "warn") {
+    console.warn(line);
+  } else {
+    console.log(line);
+  }
+}
 
 /** Mensagem inicial enviada quando o cliente já está cadastrado e a conversa começa. */
 function buildInitialClientMessage(nome: string): string {
@@ -66,9 +88,9 @@ export function buildGenerateAiResponseRouter(
   deps: GenerateAiResponseDeps,
 ): Router {
   const router = Router();
-  router.post("/", (req: Request, res: Response) =>
-    handleGenerate(req, res, deps),
-  );
+  router.post("/", (req: Request, res: Response, next: NextFunction) => {
+    void handleGenerate(req, res, deps, next);
+  });
   return router;
 }
 
@@ -76,6 +98,7 @@ async function handleGenerate(
   req: Request,
   res: Response,
   deps: GenerateAiResponseDeps,
+  next: NextFunction,
 ): Promise<void> {
   const env = deps.env;
   const runImpl = deps.runAgentsImpl ?? runAgents;
@@ -106,6 +129,17 @@ async function handleGenerate(
   }
 
   try {
+    logGenerateAi("generate_ai_request", {
+      conversaId,
+      organizacaoId: organizacaoId ?? null,
+      hasNumeroWhatsapp: Boolean(
+        typeof numeroWhatsapp === "string" && numeroWhatsapp.trim().length > 0,
+      ),
+      instancia: instancia ?? null,
+      queueRetryCount,
+      hasAudioPayload: Boolean(audioData),
+    });
+
     const { data: conversa, error: conversaError } = await supabase
       .from("whatsapp_conversas")
       .select("status")
@@ -122,6 +156,11 @@ async function handleGenerate(
       conversa?.status === "em_atendimento_humano" ||
       conversa?.status === "em_atendimento_whatsapp"
     ) {
+      logGenerateAi("generate_ai_skipped", {
+        conversaId,
+        reason: "human_service_active",
+        conversaStatus: conversa?.status ?? null,
+      });
       res.status(200).json({
         message:
           "Conversa em atendimento humano - mensagem não processada pelo chatbot",
@@ -149,7 +188,8 @@ async function handleGenerate(
       await ensureActiveService(conversaId, organizacaoId, env);
     }
 
-    const { lastResponseId, isNewService } = await getLastResponseIfActive(
+    const { lastResponseId, isNewService, chainDecisionReason } =
+      await getLastResponseIfActive(
       conversaId,
       env,
     );
@@ -190,7 +230,17 @@ async function handleGenerate(
 
     const pendingMessages = (claimedMessages ?? []) as ClaimedPendingMessage[];
 
+    logGenerateAi("generate_ai_claim", {
+      conversaId,
+      claimedCount: pendingMessages.length,
+      claimedMessageIds: pendingMessages.map((m) => m.id),
+    });
+
     if (pendingMessages.length === 0) {
+      logGenerateAi("generate_ai_empty_claim_batch", {
+        conversaId,
+        queueRetryCount,
+      });
       const handled = await handleEmptyClaim({
         conversaId,
         organizacaoId,
@@ -210,6 +260,11 @@ async function handleGenerate(
     const inputs = await buildAgentInputs(pendingMessages, env);
 
     if (inputs.length === 0) {
+      logGenerateAi("generate_ai_skipped", {
+        conversaId,
+        reason: "no_ai_eligible_messages",
+        claimedCount: pendingMessages.length,
+      });
       res.status(200).json({
         message: "Lote sem mensagens elegíveis para IA",
         status: "skipped",
@@ -234,6 +289,14 @@ async function handleGenerate(
         ? clienteId
         : undefined;
 
+    logGenerateAi("generate_ai_run_start", {
+      conversaId,
+      inputsCount: inputs.length,
+      hadPreviousResponse: Boolean(lastResponseId),
+      previousResponseChainReason: chainDecisionReason,
+      clientIdForAgents: Boolean(clientIdForAgents),
+    });
+
     const result = await runImpl(
       {
         inputs,
@@ -251,6 +314,28 @@ async function handleGenerate(
     const responseId = result.responseId;
     const tokensUsed = result.usage.totalTokens || undefined;
 
+    logGenerateAi("generate_ai_run_done", {
+      conversaId,
+      agentUsed: result.agentUsed,
+      outputCharCount: responseContent.length,
+      outputTrimmedEmpty:
+        typeof responseContent === "string" &&
+        responseContent.trim().length === 0,
+      responseIdPresent: Boolean(responseId),
+      tokensUsed: tokensUsed ?? null,
+    });
+
+    if (
+      typeof responseContent === "string" &&
+      responseContent.trim().length === 0
+    ) {
+      logGenerateAi(
+        "generate_ai_empty_model_output",
+        { conversaId, agentUsed: result.agentUsed },
+        "warn",
+      );
+    }
+
     const mensagemData = await saveChatbotMessage(
       conversaId,
       responseContent,
@@ -258,6 +343,11 @@ async function handleGenerate(
       undefined,
       env,
     );
+
+    logGenerateAi("generate_ai_message_saved", {
+      conversaId,
+      mensagemId: mensagemData.id,
+    });
 
     if (responseId) {
       await insertWhatsappConversationResponse(
@@ -282,6 +372,12 @@ async function handleGenerate(
     }
 
     if (numeroWhatsapp) {
+      logGenerateAi("generate_ai_evolution_send", {
+        conversaId,
+        instancia: resolvedInstancia,
+        outputCharCount: responseContent.length,
+        numeroWhatsappLen: numeroWhatsapp.length,
+      });
       await sendEvolutionMessage(
         resolvedInstancia,
         numeroWhatsapp,
@@ -289,10 +385,21 @@ async function handleGenerate(
         env,
       );
     } else {
+      logGenerateAi(
+        "generate_ai_evolution_skipped",
+        { conversaId, reason: "numero_whatsapp_absent" },
+        "warn",
+      );
       console.warn(
         "⚠️ numeroWhatsapp ausente — resposta gerada mas não enviada via Evolution",
       );
     }
+
+    logGenerateAi("generate_ai_completed", {
+      conversaId,
+      mensagemId: mensagemData.id,
+      sentViaEvolution: Boolean(numeroWhatsapp),
+    });
 
     res.status(200).json({
       message: "AI response generated successfully",
@@ -311,8 +418,7 @@ async function handleGenerate(
       },
     });
   } catch (error) {
-    console.error("❌ Erro em generateAiResponse:", error);
-    res.status(500).json({ error: "Internal server error" });
+    next(error);
   }
 }
 
@@ -334,6 +440,12 @@ async function handleEmptyClaim(params: {
   env: EnvConfig;
 }): Promise<Record<string, unknown>> {
   const supabase = getSupabaseClient(params.env);
+
+  logGenerateAi("generate_ai_handle_empty_claim", {
+    conversaId: params.conversaId,
+    queueRetryCount: params.queueRetryCount,
+    organizacaoId: params.organizacaoId ?? null,
+  });
 
   const { data: latestPending, error: peekError } = await supabase
     .from("whatsapp_mensagens")
@@ -384,6 +496,12 @@ async function handleEmptyClaim(params: {
       params.env,
     );
 
+    logGenerateAi("generate_ai_requeued_aggregation_window", {
+      conversaId: params.conversaId,
+      waitSec,
+      nextRetryCount: params.queueRetryCount + 1,
+    });
+
     return {
       message: "Janela de agregação — nova tentativa agendada",
       status: "skipped",
@@ -404,6 +522,13 @@ async function handleEmptyClaim(params: {
       `❌ Limite de re-enfileiramentos (${CHATBOT_QUEUE_SELF_RETRY_MAX}) atingido com pendente ainda na janela`,
     );
   }
+
+  logGenerateAi("generate_ai_empty_claim_final", {
+    conversaId: params.conversaId,
+    reason: "no_eligible_batch",
+    queueRetryCount: params.queueRetryCount,
+    ageSec,
+  });
 
   return {
     message: "Sem lote elegível para processamento",

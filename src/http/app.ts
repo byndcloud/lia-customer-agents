@@ -20,6 +20,7 @@ import { buildFollowup30minRouter } from "./routes/followup30min.js";
 import { buildGenerateAiResponseRouter } from "./routes/generateAiResponse.js";
 import { buildRunRouter } from "./routes/run.js";
 import { buildWebhookEvolutionRouter } from "./routes/webhookEvolution.js";
+import { buildInternalErrorLogDetail } from "./internalErrorLog.js";
 
 /**
  * Dependências injetáveis no app (facilita testes).
@@ -118,12 +119,30 @@ function errorHandler(
   }
 
   if (err instanceof ZodError) {
+    if (res.headersSent) {
+      logError("invalid_input_after_headers_sent", {
+        issues: err.issues,
+        request: requestSummary(req),
+      });
+      return;
+    }
     res.status(400).json({ error: "invalid_input", details: err.issues });
     return;
   }
 
-  logError("internal_error", err);
-  res.status(500).json({ error: "internal_error" });
+  logError(
+    "internal_error",
+    buildInternalErrorLogDetail(err, {
+      method: req.method,
+      path: req.path,
+      originalUrl: req.originalUrl,
+      baseUrl: req.baseUrl,
+    }),
+  );
+
+  if (!res.headersSent) {
+    res.status(500).json({ error: "internal_error" });
+  }
 }
 
 function logError(kind: string, detail: unknown): void {
@@ -134,6 +153,14 @@ function logError(kind: string, detail: unknown): void {
   };
 
   console.error(`\n${JSON.stringify(payload, null, 2)}\n`);
+}
+
+function requestSummary(req: Request): Pick<Request, "method" | "path" | "originalUrl"> {
+  return {
+    method: req.method,
+    path: req.path,
+    originalUrl: req.originalUrl,
+  };
 }
 
 const SENSITIVE_HEADER_NAMES = new Set([
