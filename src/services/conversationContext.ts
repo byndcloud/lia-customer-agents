@@ -5,8 +5,9 @@ import { getSupabaseClient } from "../db/client.js";
 /**
  * Resolve o contexto de sessão OpenAI (`conv_...`) do atendimento ativo.
  *
- * Também retorna o último `response_id` do atendimento apenas para auditoria/
- * métricas no banco; o fluxo principal de continuidade usa `Session`.
+ * **Legado:** o fluxo `POST /generate-ai-response` não usa mais este módulo
+ * (histórico vem de `whatsapp_mensagens` + `agente_responsavel`). Mantido para
+ * testes e possíveis consumidores antigos (`getLastResponseIfActive`).
  */
 
 export interface ActiveServiceSessionContext {

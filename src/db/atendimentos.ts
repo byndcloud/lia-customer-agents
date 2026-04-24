@@ -1,4 +1,5 @@
 import type { EnvConfig } from "../config/env.js";
+import type { AgentId } from "../types.js";
 import { getSupabaseClient } from "./client.js";
 
 /**
@@ -12,12 +13,38 @@ import { getSupabaseClient } from "./client.js";
 export interface EnsureActiveServiceResult {
   atendimentoId: string;
   isNew: boolean;
+  iniciadoEm: string;
+  agenteResponsavel: AgentId;
+}
+
+const KNOWN_AGENT_IDS = new Set<string>([
+  "orchestrator",
+  "triage",
+  "process_info",
+]);
+
+/** Normaliza valor persistido em `agente_responsavel` para `AgentId`. */
+export function normalizeAgenteResponsavel(
+  raw: string | null | undefined,
+): AgentId {
+  if (raw && KNOWN_AGENT_IDS.has(raw)) {
+    return raw as AgentId;
+  }
+  return "orchestrator";
 }
 
 export interface ActiveServiceConversationThread {
   atendimentoId: string;
   iniciadoEm: string;
   openAiConversationId: string | null;
+}
+
+/** Atendimento ativo com janela temporal e agente IA responsável (chatbot). */
+export interface ActiveChatbotServiceRow {
+  readonly atendimentoId: string;
+  readonly iniciadoEm: string;
+  /** `orchestrator` | `triage` | `process_info` — alinhado a `AgentId`. */
+  readonly agenteResponsavel: AgentId;
 }
 
 /**
@@ -33,10 +60,15 @@ export async function ensureActiveService(
 
   const { data: ativo, error: searchError } = await supabase
     .from("whatsapp_atendimentos")
-    .select("id, tipo_responsavel, iniciado_em")
+    .select("id, tipo_responsavel, iniciado_em, agente_responsavel")
     .eq("conversa_id", conversaId)
     .is("finalizado_em", null)
-    .maybeSingle<{ id: string; tipo_responsavel: string; iniciado_em: string }>();
+    .maybeSingle<{
+      id: string;
+      tipo_responsavel: string;
+      iniciado_em: string;
+      agente_responsavel: string | null;
+    }>();
 
   if (searchError && searchError.code !== "PGRST116") {
     throw new Error(
@@ -45,7 +77,12 @@ export async function ensureActiveService(
   }
 
   if (ativo) {
-    return { atendimentoId: ativo.id, isNew: false };
+    return {
+      atendimentoId: ativo.id,
+      isNew: false,
+      iniciadoEm: ativo.iniciado_em,
+      agenteResponsavel: normalizeAgenteResponsavel(ativo.agente_responsavel),
+    };
   }
 
   const { data: novo, error: insertError } = await supabase
@@ -57,9 +94,14 @@ export async function ensureActiveService(
       responsavel_id: null,
       status_atendimento: "em_andamento",
       iniciado_em: new Date().toISOString(),
+      agente_responsavel: "orchestrator",
     })
-    .select("id")
-    .single<{ id: string }>();
+    .select("id, iniciado_em, agente_responsavel")
+    .single<{
+      id: string;
+      iniciado_em: string;
+      agente_responsavel: string | null;
+    }>();
 
   if (insertError || !novo) {
     throw new Error(
@@ -67,7 +109,150 @@ export async function ensureActiveService(
     );
   }
 
-  return { atendimentoId: novo.id, isNew: true };
+  return {
+    atendimentoId: novo.id,
+    isNew: true,
+    iniciadoEm: novo.iniciado_em,
+    agenteResponsavel: normalizeAgenteResponsavel(novo.agente_responsavel),
+  };
+}
+
+/** Campos mínimos de conversa para decidir vínculo com `whatsapp_atendimentos`. */
+export interface ConversaSlimForAtendimento {
+  id: string;
+  status: string;
+  chatbot_ativo: boolean;
+}
+
+/**
+ * Retorna o id do atendimento com `finalizado_em` nulo para a conversa, se existir.
+ * Quando houver mais de um (anomalia), usa o mais recente por `iniciado_em`.
+ */
+export async function getActiveAtendimentoId(
+  conversaId: string,
+  env?: EnvConfig,
+): Promise<string | null> {
+  const supabase = getSupabaseClient(env);
+  const { data, error } = await supabase
+    .from("whatsapp_atendimentos")
+    .select("id")
+    .eq("conversa_id", conversaId)
+    .is("finalizado_em", null)
+    .order("iniciado_em", { ascending: false })
+    .limit(1)
+    .maybeSingle<{ id: string }>();
+
+  if (error && error.code !== "PGRST116") {
+    throw new Error(`Erro ao buscar atendimento ativo: ${error.message}`);
+  }
+
+  return data?.id ?? null;
+}
+
+/**
+ * Define `atendimento_id` ao persistir em `whatsapp_mensagens`.
+ * Cliente/chatbot com chatbot ligado na conversa: garante linha de atendimento.
+ * Caso contrário: apenas reutiliza atendimento aberto, se houver.
+ */
+export async function resolveAtendimentoIdForPersistedMessage(
+  conversa: ConversaSlimForAtendimento,
+  organizationId: string,
+  remetenteWillBe: "cliente" | "atendente" | "chatbot",
+  env?: EnvConfig,
+): Promise<string | undefined> {
+  const chatbotLigado =
+    conversa.status === "em_atendimento_chatbot" && conversa.chatbot_ativo;
+
+  if (
+    (remetenteWillBe === "cliente" || remetenteWillBe === "chatbot") &&
+    chatbotLigado
+  ) {
+    const s = await ensureActiveService(conversa.id, organizationId, env);
+    return s.atendimentoId;
+  }
+
+  const existing = await getActiveAtendimentoId(conversa.id, env);
+  return existing ?? undefined;
+}
+
+/**
+ * Se `candidateIso` for **anterior** a `iniciado_em` atual, retrocede o marco
+ * do atendimento (corrige `iniciado_em` gravado depois da primeira mensagem).
+ * Retorna o novo `iniciado_em` quando houve update; caso contrário `null`.
+ */
+export async function clampAtendimentoIniciadoEmIfEarlier(
+  atendimentoId: string,
+  candidateIso: string,
+  env?: EnvConfig,
+): Promise<string | null> {
+  const supabase = getSupabaseClient(env);
+  const { data, error } = await supabase
+    .from("whatsapp_atendimentos")
+    .select("iniciado_em")
+    .eq("id", atendimentoId)
+    .maybeSingle<{ iniciado_em: string }>();
+
+  if (error && error.code !== "PGRST116") {
+    throw new Error(
+      `Erro ao ler iniciado_em do atendimento: ${error.message}`,
+    );
+  }
+  if (!data?.iniciado_em) return null;
+
+  const cur = new Date(data.iniciado_em).getTime();
+  const cand = new Date(candidateIso).getTime();
+  if (Number.isNaN(cur) || Number.isNaN(cand) || cand >= cur) {
+    return null;
+  }
+
+  const nextIso = new Date(cand).toISOString();
+  const { error: upErr } = await supabase
+    .from("whatsapp_atendimentos")
+    .update({
+      iniciado_em: nextIso,
+      updated_at: new Date().toISOString(),
+    })
+    .eq("id", atendimentoId);
+
+  if (upErr) throw upErr;
+  return nextIso;
+}
+
+/**
+ * Atualiza o agente IA responsável no atendimento chatbot ativo da conversa.
+ */
+export async function updateActiveServiceResponsibleAgent(
+  conversaId: string,
+  agentId: AgentId,
+  env?: EnvConfig,
+): Promise<void> {
+  const supabase = getSupabaseClient(env);
+  const { data: ativo, error: searchError } = await supabase
+    .from("whatsapp_atendimentos")
+    .select("id")
+    .eq("conversa_id", conversaId)
+    .eq("tipo_responsavel", "chatbot")
+    .is("finalizado_em", null)
+    .maybeSingle<{ id: string }>();
+
+  if (searchError && searchError.code !== "PGRST116") {
+    throw new Error(
+      `Erro ao buscar atendimento chatbot ativo: ${searchError.message}`,
+    );
+  }
+  if (!ativo) {
+    return;
+  }
+
+  const { error } = await supabase
+    .from("whatsapp_atendimentos")
+    .update({
+      agente_responsavel: agentId,
+      updated_at: new Date().toISOString(),
+    })
+    .eq("id", ativo.id);
+
+  if (error) throw error;
 }
 
 /**

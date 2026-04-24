@@ -7,6 +7,7 @@ import {
 } from "../../db/conversations.js";
 import {
   finalizarAtendimentoWhatsAppComoResolvido,
+  resolveAtendimentoIdForPersistedMessage,
   transicionarParaAtendimentoWhatsApp,
 } from "../../db/atendimentos.js";
 import { getOrganizationByInstanceName } from "../../db/instances.js";
@@ -156,7 +157,14 @@ async function handleWebhook(
     }
   }
 
-  const state = await processMessage(body, conversa, activeInstance.instance_name, phoneNumber, deps.env);
+  const state = await processMessage(
+    body,
+    conversa,
+    activeInstance.instance_name,
+    phoneNumber,
+    organizationId,
+    deps.env,
+  );
 
   await maybeEncerrarConversaPorMarcador(
     body,
@@ -197,12 +205,24 @@ async function processMessage(
   conversa: WhatsappConversa,
   instanceName: string,
   phoneNumber: string,
+  organizationId: string,
   env: EnvConfig,
 ): Promise<MessageProcessingState> {
   const state: MessageProcessingState = {
     messageContent: "",
     shouldEnqueueToAI: true,
   };
+
+  const atendimentoIdPersist = await resolveAtendimentoIdForPersistedMessage(
+    {
+      id: conversa.id,
+      status: conversa.status,
+      chatbot_ativo: conversa.chatbot_ativo,
+    },
+    organizationId,
+    body.data.key.fromMe ? "atendente" : "cliente",
+    env,
+  );
 
   switch (body.data.messageType) {
     case "conversation": {
@@ -213,6 +233,7 @@ async function processMessage(
         state.messageContent,
         undefined,
         env,
+        atendimentoIdPersist,
       );
       break;
     }
@@ -225,6 +246,7 @@ async function processMessage(
         state.messageContent,
         undefined,
         env,
+        atendimentoIdPersist,
       );
       break;
     }
@@ -240,6 +262,7 @@ async function processMessage(
         state.messageContent,
         undefined,
         env,
+        atendimentoIdPersist,
       );
       break;
     }
@@ -252,6 +275,8 @@ async function processMessage(
         phoneNumber,
         state,
         env,
+        organizationId,
+        atendimentoIdPersist,
       );
       break;
     }
@@ -267,6 +292,8 @@ async function processMessage(
         phoneNumber,
         state,
         env,
+        organizationId,
+        atendimentoIdPersist,
       );
       break;
     }
@@ -295,6 +322,8 @@ async function processAudioMessage(
   phoneNumber: string,
   state: MessageProcessingState,
   env: EnvConfig,
+  organizationId: string,
+  atendimentoIdPersist: string | undefined,
 ): Promise<void> {
   const audioMsg = body.data.message.audioMessage as {
     caption?: string;
@@ -322,7 +351,8 @@ async function processAudioMessage(
       await sendAndStoreAutoReply(
         instanceName,
         phoneNumber,
-        conversa.id,
+        conversa,
+        organizationId,
         errorMessage,
         env,
       );
@@ -344,6 +374,7 @@ async function processAudioMessage(
     caption,
     undefined,
     env,
+    atendimentoIdPersist,
   );
 
   if (body.data.key.fromMe) return;
@@ -360,7 +391,8 @@ async function processAudioMessage(
       await sendAndStoreAutoReply(
         instanceName,
         phoneNumber,
-        conversa.id,
+        conversa,
+        organizationId,
         message,
         env,
       );
@@ -380,6 +412,8 @@ async function processUnsupportedMediaMessage(
   phoneNumber: string,
   state: MessageProcessingState,
   env: EnvConfig,
+  organizationId: string,
+  atendimentoIdPersist: string | undefined,
 ): Promise<void> {
   const messageType = body.data.messageType;
   const msg = body.data.message[messageType] as
@@ -411,7 +445,8 @@ async function processUnsupportedMediaMessage(
       await sendAndStoreAutoReply(
         instanceName,
         phoneNumber,
-        conversa.id,
+        conversa,
+        organizationId,
         errorMessage,
         env,
       );
@@ -438,6 +473,7 @@ async function processUnsupportedMediaMessage(
     caption,
     undefined,
     env,
+    atendimentoIdPersist,
   );
 
   state.shouldEnqueueToAI = false;
@@ -452,7 +488,8 @@ async function processUnsupportedMediaMessage(
     await sendAndStoreAutoReply(
       instanceName,
       phoneNumber,
-      conversa.id,
+      conversa,
+      organizationId,
       message,
       env,
     );
@@ -462,13 +499,31 @@ async function processUnsupportedMediaMessage(
 async function sendAndStoreAutoReply(
   instanceName: string,
   phoneNumber: string,
-  conversaId: string,
+  conversa: WhatsappConversa,
+  organizationId: string,
   message: string,
   env: EnvConfig,
 ): Promise<void> {
   try {
     await sendEvolutionMessage(instanceName, phoneNumber, message, env);
-    await saveChatbotMessage(conversaId, message, "texto", undefined, env);
+    const aid = await resolveAtendimentoIdForPersistedMessage(
+      {
+        id: conversa.id,
+        status: conversa.status,
+        chatbot_ativo: conversa.chatbot_ativo,
+      },
+      organizationId,
+      "chatbot",
+      env,
+    );
+    await saveChatbotMessage(
+      conversa.id,
+      message,
+      "texto",
+      undefined,
+      env,
+      aid,
+    );
   } catch (error) {
     console.error("❌ Erro ao enviar resposta automática:", error);
   }

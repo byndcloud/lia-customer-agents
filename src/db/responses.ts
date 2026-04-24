@@ -2,9 +2,9 @@ import type { EnvConfig } from "../config/env.js";
 import { getSupabaseClient } from "./client.js";
 
 /**
- * Vinculação entre mensagens do chatbot e o `response_id` do OpenAI/Agents.
- * Persistir o `responseId` é o que permite o encadeamento (`previousResponseId`)
- * em rodadas subsequentes.
+ * Vinculação entre mensagens do chatbot e o `response_id` do OpenAI/Agents
+ * (auditoria). O fluxo principal não usa mais encadeamento por
+ * `previous_response_id`.
  */
 
 interface InsertWhatsappConversationResponseParams {
@@ -13,7 +13,6 @@ interface InsertWhatsappConversationResponseParams {
   modelUsed: string;
   tokensUsed?: number | undefined;
   error?: string | undefined;
-  previousResponseId?: string | undefined;
 }
 
 export async function insertWhatsappConversationResponse(
@@ -30,7 +29,7 @@ export async function insertWhatsappConversationResponse(
       p_model_used: responseData.modelUsed,
       p_tokens_used: responseData.tokensUsed,
       p_error: responseData.error,
-      p_previous_response_id: responseData.previousResponseId,
+      p_previous_response_id: null,
     },
   );
 

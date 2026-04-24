@@ -2,6 +2,7 @@ import { Router, type Request, type Response } from "express";
 import type { EnvConfig } from "../../config/env.js";
 import { getSupabaseClient } from "../../db/client.js";
 import { getActiveWhatsAppInstance } from "../../db/instances.js";
+import { resolveAtendimentoIdForPersistedMessage } from "../../db/atendimentos.js";
 import { saveOutgoingMessage } from "../../db/messages.js";
 import {
   sendEvolutionAudio,
@@ -87,9 +88,13 @@ async function handleDeliver(
 
     const { data: conversaOrg, error: conversaOrgError } = await supabase
       .from("whatsapp_conversas")
-      .select("organization_id")
+      .select("organization_id, status, chatbot_ativo")
       .eq("id", conversaId)
-      .maybeSingle<{ organization_id: string }>();
+      .maybeSingle<{
+        organization_id: string;
+        status: string;
+        chatbot_ativo: boolean;
+      }>();
 
     if (conversaOrgError) throw conversaOrgError;
 
@@ -192,6 +197,17 @@ async function handleDeliver(
       );
     }
 
+    const atendimentoId = await resolveAtendimentoIdForPersistedMessage(
+      {
+        id: conversaId,
+        status: conversaOrg.status,
+        chatbot_ativo: conversaOrg.chatbot_ativo,
+      },
+      conversaOrg.organization_id,
+      "atendente",
+      env,
+    );
+
     const savedMessage = await saveOutgoingMessage(
       conversaId,
       messageType,
@@ -200,6 +216,7 @@ async function handleDeliver(
       anexoUrl,
       body.userId,
       env,
+      atendimentoId,
     );
 
     res.status(200).json({

@@ -1,25 +1,29 @@
 import { z } from "zod";
 
 /**
- * Identificadores dos agentes do fluxo principal (triagem e consulta processual).
+ * Identificadores dos agentes do fluxo principal.
  *
- * `triage` — Lia de primeiro atendimento (triagem de casos)
- * `process_info` — Lia de consulta a processos já existentes
+ * `orchestrator` — recepção / orquestrador (handoff para especialistas)
+ * `triage` — triagem de casos trabalhistas
+ * `process_info` — consulta a processos já existentes
  */
-export const AgentIdSchema = z.enum(["triage", "process_info"]);
+export const AgentIdSchema = z.enum([
+  "orchestrator",
+  "triage",
+  "process_info",
+]);
 export type AgentId = z.infer<typeof AgentIdSchema>;
 
 /**
  * Schema mínimo aceito como item de input dos agentes.
  *
  * O SDK aceita uma variedade muito maior de itens (ferramentas, imagens,
- * arquivos, etc.), mas para o nosso fluxo (chat WhatsApp) só precisamos do
- * `UserMessageItem` simples — texto de usuário. Validamos só o suficiente
- * para garantir que `run()` aceite.
+ * arquivos, etc.). Para o chat WhatsApp usamos mensagens simples com
+ * `user` / `assistant` / `system`.
  */
 export const AgentInputItemSchema = z
   .object({
-    role: z.literal("user"),
+    role: z.enum(["user", "assistant", "system"]),
     content: z.string().min(1),
     type: z.literal("message").optional(),
   })
@@ -36,9 +40,6 @@ export type AgentInputItem = z.infer<typeof AgentInputItemSchema>;
  * `organizationId` e `conversaId` (plataforma/Supabase) são obrigatórios.
  * `clientId` é opcional (pessoa ainda não vinculada no cadastro).
  *
- * `conversationId` é o thread OpenAI (`conv_...`) usado para retomar
- * `OpenAIConversationsSession`. Este campo NÃO é o mesmo id da conversa
- * da plataforma.
  */
 export const RunInputSchema = z
   .object({
@@ -47,12 +48,6 @@ export const RunInputSchema = z
 
     /** Identificador da conversa do canal/plataforma (ex.: WhatsApp). */
     conversaId: z.string().min(1),
-
-    /**
-     * Thread da OpenAI Conversations API (`conv_...`) para retomar a Session.
-     * Quando ausente, uma nova sessão pode ser criada.
-     */
-    conversationId: z.string().min(1).optional(),
 
     /** Identificador da organização/escritório. */
     organizationId: z.string().min(1),
@@ -78,6 +73,13 @@ export const RunInputSchema = z
      * contrato do SDK; podem ser utilizados pelos agentes via instruções.
      */
     extra: z.record(z.string(), z.unknown()).optional(),
+
+    /**
+     * Agente IA atualmente responsável pelo atendimento ativo (persistido em
+     * `whatsapp_atendimentos.agente_responsavel`), usado nas instruções do
+     * orquestrador para preferir re-handoff.
+     */
+    agenteResponsavelAtendimento: AgentIdSchema.optional(),
   })
   .refine(
     (value) => Boolean(value.userMessage) || Boolean(value.inputs),
@@ -108,11 +110,11 @@ export interface RunOutput {
   /** Agente que produziu a resposta final. */
   agentUsed: AgentId;
 
-  /** `response_id` retornado pela OpenAI (deve ser persistido pela edge function). */
-  responseId: string | undefined;
-
-  /** Thread OpenAI (`conv_...`) efetivo da sessão usada neste run. */
-  openaiConversationId: string | undefined;
+  /**
+   * `response_id` da OpenAI neste turno (apenas auditoria / gravação em
+   * `whatsapp_conversation_responses`). Não é usado para encadeamento.
+   */
+  responseId?: string | undefined;
 
   /** Métricas agregadas do run. */
   usage: RunUsage;
@@ -131,8 +133,8 @@ export interface AgentRunContext {
   calendarConnectionId: string | undefined;
   extra: Record<string, unknown> | undefined;
   /**
-   * `true` quando este run retoma um thread OpenAI prévio (`conv_...`) via
-   * `OpenAIConversationsSession({ conversationId })`.
+   * Agente responsável persistido no atendimento ativo (antes deste run).
+   * Ausente em chamadas que não passam pelo fluxo WhatsApp.
    */
-  continuesOpenAiAgentChain: boolean;
+  agenteResponsavelAtendimento: AgentId | undefined;
 }

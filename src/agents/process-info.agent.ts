@@ -44,7 +44,6 @@ export function buildProcessInfoAgent(
     env: params.env,
     context: params.context,
   });
-  console.log("legisMcp buildProcessInfoAgent", legisMcp);
   const fetchConfig = params.fetchChatbotAiConfig ?? getChatbotAiConfig;
 
   return new Agent<AgentRunContext>({

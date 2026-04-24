@@ -7,14 +7,20 @@ import {
 import type { EnvConfig } from "../../config/env.js";
 import { getSupabaseClient } from "../../db/client.js";
 import {
+  clampAtendimentoIniciadoEmIfEarlier,
   ensureActiveService,
-  setActiveServiceOpenAiConversationId,
+  updateActiveServiceResponsibleAgent,
 } from "../../db/atendimentos.js";
 import { updateConversationStatus } from "../../db/conversations.js";
-import { saveChatbotMessage } from "../../db/messages.js";
+import {
+  getMensagensByAtendimentoId,
+  getWhatsappMensagensByIds,
+  mergeWhatsappMensagensChronological,
+  saveChatbotMessage,
+  type WhatsappMensagem,
+} from "../../db/messages.js";
 import { insertWhatsappConversationResponse } from "../../db/responses.js";
 import { transcribeAudioFromStorage } from "../../services/audioTranscription.js";
-import { getActiveServiceSessionContext } from "../../services/conversationContext.js";
 import { shouldInterceptMessage } from "../../services/conversationFlowInterceptor.js";
 import { sendEvolutionMessage } from "../../services/evolutionApi.js";
 import {
@@ -23,13 +29,90 @@ import {
 } from "../../services/queueService.js";
 import { resolveWhatsAppInstance } from "../../services/whatsappInstanceResolver.js";
 import { runAgents } from "../../runtime/run-agents.js";
-import type { AgentInputItem } from "../../types.js";
+import type { AgentId, AgentInputItem } from "../../types.js";
 
 /** Janela de agregação em segundos (mantém o mesmo valor da edge function). */
 const CHATBOT_AGGREGATION_WINDOW_SEC = 20;
 
 /** Limite de re-enfileiramentos quando a janela ainda está aberta. */
 const CHATBOT_QUEUE_SELF_RETRY_MAX = 12;
+
+/** Rótulos para a mensagem de sistema do agente responsável no atendimento. */
+const AGENT_SYSTEM_LABEL: Record<AgentId, string> = {
+  orchestrator: "recepção (orquestrador)",
+  triage: "triagem",
+  process_info: "consulta processual",
+};
+
+function buildResponsibleAgentSystemMessage(agente: AgentId): AgentInputItem {
+  const label = AGENT_SYSTEM_LABEL[agente];
+  return {
+    role: "system",
+    content: `esse atendimento se encontra no agente ${label}.`,
+    type: "message",
+  };
+}
+
+/** Menor `created_at` válido entre as mensagens em claim (batch atual). */
+function earliestCreatedAtIsoInBatch(
+  batch: ReadonlyArray<ClaimedPendingMessage>,
+): string | null {
+  let minMs = Infinity;
+  for (const m of batch) {
+    if (!m.created_at) continue;
+    const t = new Date(m.created_at).getTime();
+    if (!Number.isNaN(t) && t < minMs) minMs = t;
+  }
+  return minMs === Infinity ? null : new Date(minMs).toISOString();
+}
+
+/**
+ * Primeiro run de um **atendimento novo**: não carrega histórico do banco;
+ * envia só a mensagem de sistema do agente + o lote em claim (mensagens
+ * recém-chegadas / agregadas neste processamento).
+ */
+async function buildAgentInputsNewAtendimentoPendingOnly(params: {
+  pendingMessages: ClaimedPendingMessage[];
+  agenteResponsavel: AgentId;
+  env: EnvConfig;
+}): Promise<AgentInputItem[]> {
+  const items: AgentInputItem[] = [
+    buildResponsibleAgentSystemMessage(params.agenteResponsavel),
+  ];
+
+  for (const pending of params.pendingMessages) {
+    const messageType = pending.tipo_mensagem ?? "texto";
+
+    if (messageType === "audio" && pending.anexo_url) {
+      const t = await transcribeAudioFromStorage(
+        pending.anexo_url,
+        "audio/ogg",
+        params.env,
+      );
+      const content = t.success && t.transcription
+        ? t.transcription.trim()
+        : "[áudio sem transcrição]";
+      if (content) {
+        items.push({
+          role: "user",
+          content,
+          type: "message",
+        });
+      }
+      continue;
+    }
+
+    if (messageType === "texto" && pending.conteudo?.trim()) {
+      items.push({
+        role: "user",
+        content: pending.conteudo,
+        type: "message",
+      });
+    }
+  }
+
+  return items;
+}
 
 /**
  * Log estruturado (uma linha JSON) para depuração do fluxo
@@ -122,13 +205,6 @@ async function handleGenerate(
     return;
   }
 
-  /** Preenchido após carregar contexto da sessão OpenAI — usado no `catch`. */
-  let openAiSessionContext: {
-    openAiConversationId: string | null;
-    lastResponseId: string | null;
-    chainDecisionReason: string;
-  } | null = null;
-
   try {
     logGenerateAi("generate_ai_request", {
       conversaId,
@@ -185,24 +261,18 @@ async function handleGenerate(
 
     await updateConversationStatus(conversaId, "em_atendimento_chatbot", env);
 
-    if (organizacaoId) {
-      await ensureActiveService(conversaId, organizacaoId, env);
+    if (!organizacaoId || String(organizacaoId).trim() === "") {
+      res.status(400).json({
+        error: "organizacaoId é obrigatório para gerar resposta",
+      });
+      return;
     }
 
-    const {
-      openAiConversationId,
-      lastResponseId,
-      isNewService,
-      chainDecisionReason,
-    } = await getActiveServiceSessionContext(
+    const activeService = await ensureActiveService(
       conversaId,
+      organizacaoId,
       env,
     );
-    openAiSessionContext = {
-      openAiConversationId,
-      lastResponseId,
-      chainDecisionReason,
-    };
 
     const calendarConnectionId = await resolveCalendarConnection(
       organizacaoId,
@@ -252,9 +322,56 @@ async function handleGenerate(
       return;
     }
 
-    const inputs = await buildAgentInputs(pendingMessages, env);
+    let serviceAtendimento = activeService;
+    const earliestClaimIso = earliestCreatedAtIsoInBatch(pendingMessages);
+    if (earliestClaimIso) {
+      const patchedIniciado = await clampAtendimentoIniciadoEmIfEarlier(
+        serviceAtendimento.atendimentoId,
+        earliestClaimIso,
+        env,
+      );
+      if (patchedIniciado) {
+        serviceAtendimento = {
+          ...serviceAtendimento,
+          iniciadoEm: patchedIniciado,
+        };
+        logGenerateAi("generate_ai_atendimento_iniciado_em_clamped", {
+          conversaId,
+          atendimentoId: serviceAtendimento.atendimentoId,
+          iniciadoEm: patchedIniciado,
+          earliestFromClaimBatch: earliestClaimIso,
+        });
+      }
+    }
 
-    if (inputs.length === 0) {
+    let inputs: AgentInputItem[];
+    if (serviceAtendimento.isNew) {
+      inputs = await buildAgentInputsNewAtendimentoPendingOnly({
+        pendingMessages,
+        agenteResponsavel: serviceAtendimento.agenteResponsavel,
+        env,
+      });
+    } else {
+      inputs = await buildAgentInputsFromAtendimentoWindow({
+        atendimentoId: serviceAtendimento.atendimentoId,
+        agenteResponsavel: serviceAtendimento.agenteResponsavel,
+        ensureMessageIds: pendingMessages.map((m) => m.id),
+        env,
+      });
+    }
+
+    logGenerateAi("generate_ai_input_scope", {
+      conversaId,
+      isNewAtendimento: serviceAtendimento.isNew,
+      inputMode: serviceAtendimento.isNew
+        ? "pending_batch_only"
+        : "full_atendimento_history",
+      pendingCount: pendingMessages.length,
+      inputsCount: inputs.length,
+    });
+
+    const hasUserTurn = inputs.some((item) => item.role === "user");
+    if (!hasUserTurn) {
       logGenerateAi("generate_ai_skipped", {
         conversaId,
         reason: "no_ai_eligible_messages",
@@ -269,16 +386,6 @@ async function handleGenerate(
       return;
     }
 
-    if (!organizacaoId) {
-      console.error(
-        "❌ organizacaoId ausente — não é possível chamar runAgents",
-      );
-      res.status(400).json({
-        error: "organizacaoId é obrigatório para gerar resposta",
-      });
-      return;
-    }
-
     const clientIdForAgents =
       typeof clienteId === "string" && clienteId.trim().length > 0
         ? clienteId
@@ -287,9 +394,8 @@ async function handleGenerate(
     logGenerateAi("generate_ai_run_start", {
       conversaId,
       inputsCount: inputs.length,
-      hasOpenAiConversationId: Boolean(openAiConversationId),
-      openAiSessionDecision: chainDecisionReason,
-      hasPreviousResponseRow: Boolean(lastResponseId),
+      agenteResponsavelAtendimento: serviceAtendimento.agenteResponsavel,
+      isNewAtendimento: serviceAtendimento.isNew,
       clientIdForAgents: Boolean(clientIdForAgents),
     });
 
@@ -297,13 +403,19 @@ async function handleGenerate(
       {
         inputs,
         conversaId,
-        conversationId: openAiConversationId ?? undefined,
         organizationId: organizacaoId,
         clientId: clientIdForAgents,
         calendarConnectionId,
+        agenteResponsavelAtendimento: serviceAtendimento.agenteResponsavel,
         extra: pessoaId ? { pessoaId } : undefined,
       },
       { env },
+    );
+
+    await updateActiveServiceResponsibleAgent(
+      conversaId,
+      result.agentUsed,
+      env,
     );
 
     const responseContent = result.output;
@@ -319,23 +431,7 @@ async function handleGenerate(
         responseContent.trim().length === 0,
       responseIdPresent: Boolean(responseId),
       tokensUsed: tokensUsed ?? null,
-      openaiConversationId: result.openaiConversationId ?? null,
     });
-
-    if (
-      result.openaiConversationId &&
-      result.openaiConversationId !== openAiConversationId
-    ) {
-      await setActiveServiceOpenAiConversationId(
-        conversaId,
-        result.openaiConversationId,
-        env,
-      );
-      logGenerateAi("generate_ai_openai_conversation_persisted", {
-        conversaId,
-        openaiConversationId: result.openaiConversationId,
-      });
-    }
 
     if (
       typeof responseContent === "string" &&
@@ -354,6 +450,7 @@ async function handleGenerate(
       "texto",
       undefined,
       env,
+      serviceAtendimento.atendimentoId,
     );
 
     logGenerateAi("generate_ai_message_saved", {
@@ -368,7 +465,6 @@ async function handleGenerate(
           whatsappMensagemId: mensagemData.id,
           modelUsed: env.aiModel,
           tokensUsed,
-          previousResponseId: lastResponseId ?? undefined,
         },
         env,
       );
@@ -421,11 +517,8 @@ async function handleGenerate(
         response_content: responseContent,
         mensagem_id: mensagemData.id,
         response_id: responseId,
-        openai_conversation_id: result.openaiConversationId,
         tokens_used: tokensUsed,
-        had_previous_response: Boolean(lastResponseId),
-        resumed_openai_conversation: Boolean(openAiConversationId),
-        is_new_service: isNewService,
+        is_new_atendimento: activeService.isNew,
         claimed_messages_count: pendingMessages.length,
         aggregated_messages_count: inputs.length,
         agent_used: result.agentUsed,
@@ -438,10 +531,6 @@ async function handleGenerate(
         "generate_ai_openai_responses_missing_tool_output",
         {
           conversaId,
-          openAiConversationId:
-            openAiSessionContext?.openAiConversationId ?? null,
-          lastResponseId: openAiSessionContext?.lastResponseId ?? null,
-          chainDecisionReason: openAiSessionContext?.chainDecisionReason ?? null,
           errorMessagePreview: errMsg.slice(0, 800),
           hint: "OpenAI Responses: existe function_call no encadeamento sem function_call_result correspondente. Ver logs run_agents_failed na mesma conversaId.",
         },
@@ -568,42 +657,71 @@ async function handleEmptyClaim(params: {
 }
 
 /**
- * Constrói o array de `AgentInputItem` a partir do batch agregado.
- *
- * Para áudios, faz a transcrição via Whisper e usa o texto retornado. Falhas
- * de transcrição não derrubam o batch — viram um placeholder para o agente
- * saber que houve áudio.
+ * Converte uma linha de `whatsapp_mensagens` em item de input do agente.
+ * Cliente → `user`; chatbot/atendente → `assistant`.
  */
-async function buildAgentInputs(
-  pendingMessages: ClaimedPendingMessage[],
+async function whatsappRowToAgentInput(
+  row: WhatsappMensagem,
   env: EnvConfig,
-): Promise<AgentInputItem[]> {
-  const inputs: AgentInputItem[] = [];
+): Promise<AgentInputItem | null> {
+  const tipo = row.tipo_mensagem ?? "texto";
+  const role =
+    row.remetente === "cliente" ? ("user" as const) : ("assistant" as const);
 
-  for (const pending of pendingMessages) {
-    const messageType = pending.tipo_mensagem ?? "texto";
+  if (tipo === "audio" && row.anexo_url) {
+    const t = await transcribeAudioFromStorage(
+      row.anexo_url,
+      "audio/ogg",
+      env,
+    );
+    const content = t.success && t.transcription
+      ? t.transcription.trim()
+      : "[áudio sem transcrição]";
+    return content
+      ? { role, content, type: "message" as const }
+      : null;
+  }
 
-    if (messageType === "audio" && pending.anexo_url) {
-      const t = await transcribeAudioFromStorage(
-        pending.anexo_url,
-        "audio/ogg",
-        env,
-      );
-      const content = t.success && t.transcription
-        ? t.transcription.trim()
-        : "[áudio sem transcrição]";
-      if (content) {
-        inputs.push({ role: "user", content });
-      }
-      continue;
-    }
+  const text = row.conteudo?.trim() ?? "";
+  if (!text) return null;
+  return { role, content: text, type: "message" as const };
+}
 
-    if (messageType === "texto" && pending.conteudo?.trim()) {
-      inputs.push({ role: "user", content: pending.conteudo });
+/**
+ * Histórico do atendimento (`whatsapp_mensagens.atendimento_id`) mais a
+ * mensagem de sistema do agente responsável. Une ids do claim que ainda não
+ * tenham `atendimento_id` preenchido (ex.: legado imediato).
+ */
+async function buildAgentInputsFromAtendimentoWindow(params: {
+  atendimentoId: string;
+  agenteResponsavel: AgentId;
+  /** Mensagens do claim que devem entrar mesmo sem vínculo na coluna nova. */
+  ensureMessageIds?: readonly string[] | undefined;
+  env: EnvConfig;
+}): Promise<AgentInputItem[]> {
+  let rows = await getMensagensByAtendimentoId(
+    params.atendimentoId,
+    params.env,
+  );
+
+  const ensureIds = params.ensureMessageIds ?? [];
+  if (ensureIds.length > 0) {
+    const have = new Set(rows.map((r) => r.id));
+    const missing = ensureIds.filter((id) => !have.has(id));
+    if (missing.length > 0) {
+      const extra = await getWhatsappMensagensByIds(missing, params.env);
+      rows = mergeWhatsappMensagensChronological(rows, extra);
     }
   }
 
-  return inputs;
+  const items: AgentInputItem[] = [
+    buildResponsibleAgentSystemMessage(params.agenteResponsavel),
+  ];
+  for (const row of rows) {
+    const item = await whatsappRowToAgentInput(row, params.env);
+    if (item) items.push(item);
+  }
+  return items;
 }
 
 async function resolveCalendarConnection(

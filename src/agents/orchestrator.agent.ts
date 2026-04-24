@@ -5,8 +5,7 @@ import { buildLegisMcpTool } from "../mcp/legis-mcp.js";
 import type { AgentRunContext } from "../types.js";
 import { buildProcessInfoAgent } from "./process-info.agent.js";
 import { buildTriageAgent } from "./triage.agent.js";
-import { removeAllTools } from '@openai/agents-core/extensions';
-
+import { removeAllTools } from "@openai/agents-core/extensions";
 
 export const ORCHESTRATOR_AGENT_NAME = "orchestrator";
 
@@ -21,15 +20,18 @@ export const ORCHESTRATOR_ALLOWED_MCP_TOOLS: ReadonlyArray<string> = [
 
 /**
  * Monta o prompt do orquestrador ("Lia recepção") com sinais do sistema
- * (`clientId`, encadeamento OpenAI). O orquestrador conduz a conversa nos
- * primeiros turnos e faz handoff para `triage` (caso trabalhista) ou
+ * (`clientId`, agente responsável persistido). O orquestrador conduz a conversa
+ * nos primeiros turnos e faz handoff para `triage` (caso trabalhista) ou
  * `process_info` (consulta de processo) quando o contexto fica claro.
  */
 export function buildOrchestratorInstructions(
   ctx: AgentRunContext,
 ): string {
   const clientLinked = Boolean(ctx.clientId);
-  const chain = ctx.continuesOpenAiAgentChain;
+  const agentePersistido = ctx.agenteResponsavelAtendimento;
+  const agentePersistidoTexto = agentePersistido
+    ? `\`${agentePersistido}\` — use o histórico completo e a mensagem de sistema deste turno. Valores: \`orchestrator\` (recepção), \`triage\`, \`process_info\`.`
+    : "(não informado — trate como recepção sem agente especialista persistido)";
 
   return `${RECOMMENDED_PROMPT_PREFIX}
 
@@ -39,8 +41,7 @@ Sua função é ser o primeiro ponto de contato: saudar, entender quem está fal
 
 ## Sinais automáticos (obrigatório considerar junto com as mensagens do cliente)
 - Cliente já vinculado ao cadastro do escritório (clientId / pessoa identificada): ${clientLinked ? "sim" : "não"}
-- Encadeamento desta execução com uma sessão prévia da OpenAI (\`conv_...\` em OpenAIConversationsSession): ${chain ? "sim" : "não"}
-  * "não" significa apenas que esta chamada **não** retomou um \`conv_...\` anterior neste run. O cliente pode já ter muitas interações no WhatsApp ou em outros canais; não interprete como "primeira interação" humana.
+- Agente IA atualmente responsável por este atendimento (persistido em banco, espelhado na mensagem de sistema do turno): ${agentePersistidoTexto}
 
 ## Quando responder diretamente (sem handoff)
 - Saudações genéricas ("oi", "olá", "bom dia").
@@ -79,6 +80,11 @@ Você pode ser invocada de novo a cada mensagem nova do cliente, **com o histór
 - Nesse caso, para a **última mensagem do cliente** neste turno, a ação correta é executar \`transfer_to_triage\` **imediatamente e sem nenhum texto** antes. A triagem responde ao cliente.
 - Se o histórico mostra **consulta de processo** em andamento (andamento, CNJ, listagem de processos após vínculo, etc.), idem: execute \`transfer_to_process_info\` **sem texto** — não conduza você mesmo esse passo.
 - Use o histórico para escolher **triage** vs **process_info** conforme o fio condutor mais recente: relato/avaliação de caso novo → triage; dúvida sobre processo já existente / número / status → process_info.
+
+## Agente já responsável pelo atendimento (retomada)
+- Se a mensagem de sistema do turno e/ou o sinal acima indicam que **já existe um agente especialista por trás** (\`triage\` ou \`process_info\` persistido), você deve **tender a fazer handoff de volta para o mesmo agente** na primeira oportunidade coerente com a **última mensagem do cliente**.
+- **Só** permaneça em recepção (sem handoff) ou escolha outro especialista quando a última mensagem do cliente estiver **claramente fora do escopo** do agente atual (ex.: estava em consulta processual e o cliente passou a relatar um caso trabalhista novo para triagem, ou o contrário de forma inequívoca).
+- Em caso de dúvida entre "mudou de assunto" vs "continuação natural", **prefira retomar o agente persistido** com handoff seco (sem texto), conforme as regras de handoff abaixo.
 
 ## O que a recepção NÃO faz (ferramentas)
 - Neste agente você **só** tem MCP \`getPerson\` (cadastro de pessoa). **Não** existe \`getLatelyProcess\` nem consulta de andamento aqui.
@@ -142,8 +148,6 @@ export function buildOrchestratorAgent(params: BuildOrchestratorAgentParams) {
     context: params.context,
   });
 
-  console.log("processInfoAgent", processInfoAgent);
-
   const legisMcp = buildLegisMcpTool({
     env: params.env,
     context: params.context,
@@ -161,8 +165,9 @@ export function buildOrchestratorAgent(params: BuildOrchestratorAgentParams) {
       handoff(processInfoAgent, {
         inputFilter: removeAllTools,
       }),
-      triageAgent,
-      
+      handoff(triageAgent, {
+        inputFilter: removeAllTools,
+      })
     ],
     tools: [legisMcp],
   });

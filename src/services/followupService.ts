@@ -1,6 +1,7 @@
 import { loadEnv, type EnvConfig } from "../config/env.js";
 import { getOpenAIClient } from "../config/openai-client.js";
 import { getSupabaseClient } from "../db/client.js";
+import { resolveAtendimentoIdForPersistedMessage } from "../db/atendimentos.js";
 import { saveChatbotMessage } from "../db/messages.js";
 import { insertWhatsappConversationResponse } from "../db/responses.js";
 import {
@@ -85,14 +86,13 @@ const FOLLOWUP_24H_DEVELOPER_MSG = `O usuário está inativo há mais de 24 hora
 
 /**
  * Gera mensagem de followup chamando direto a Responses API (encadeada com o
- * `previous_response_id` para manter o tom da conversa).
+ * sem encadear `previous_response_id` (histórico vem do canal / banco).
  *
  * NOTE: usamos a Responses API e não o Agents SDK aqui porque o followup é
  * sempre uma instrução fixa do "developer" e não deve disparar handoffs/tools.
  */
 async function gerarMensagemComResponsesApi(
   developerMessage: string,
-  previousResponseId: string | null,
   env: EnvConfig,
 ): Promise<{
   responseContent: string;
@@ -104,7 +104,6 @@ async function gerarMensagemComResponsesApi(
   const requestBody: Record<string, unknown> = {
     model: env.aiModel,
     input: [{ role: "developer", content: developerMessage }],
-    previous_response_id: previousResponseId ?? undefined,
   };
 
   const response = (await openai.responses.create(
@@ -191,11 +190,18 @@ export async function processFollowup30min(
       }
 
       const { responseContent, responseId, tokensUsed } =
-        await gerarMensagemComResponsesApi(
-          FOLLOWUP_30MIN_DEVELOPER_MSG,
-          conversa.ultimo_response_id,
-          cfg,
-        );
+        await gerarMensagemComResponsesApi(FOLLOWUP_30MIN_DEVELOPER_MSG, cfg);
+
+      const atendimentoId = await resolveAtendimentoIdForPersistedMessage(
+        {
+          id: conversa.id,
+          status: conversa.status,
+          chatbot_ativo: true,
+        },
+        conversa.organization_id,
+        "chatbot",
+        cfg,
+      );
 
       const mensagemData = await saveChatbotMessage(
         conversa.id,
@@ -203,6 +209,7 @@ export async function processFollowup30min(
         "texto",
         undefined,
         cfg,
+        atendimentoId,
       );
 
       await insertWhatsappConversationResponse(
@@ -301,10 +308,20 @@ export async function processFollowup24h(
       if (deveCriarMensagem) {
         const generated = await gerarMensagemComResponsesApi(
           FOLLOWUP_24H_DEVELOPER_MSG,
-          conversa.ultimo_response_id,
           cfg,
         );
         responseContent = generated.responseContent;
+
+        const atendimentoId24 = await resolveAtendimentoIdForPersistedMessage(
+          {
+            id: conversa.id,
+            status: conversa.status,
+            chatbot_ativo: true,
+          },
+          conversa.organization_id,
+          "chatbot",
+          cfg,
+        );
 
         const mensagemData = await saveChatbotMessage(
           conversa.id,
@@ -312,6 +329,7 @@ export async function processFollowup24h(
           "texto",
           undefined,
           cfg,
+          atendimentoId24,
         );
 
         await insertWhatsappConversationResponse(

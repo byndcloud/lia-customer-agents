@@ -6,11 +6,7 @@ import {
   RunToolCallItem,
   RunToolCallOutputItem,
 } from "@openai/agents-core";
-import {
-  OpenAIConversationsSession,
-  Runner,
-  type AgentInputItem,
-} from "@openai/agents";
+import { Runner, type AgentInputItem } from "@openai/agents";
 import {
   buildOrchestratorAgent,
   ORCHESTRATOR_AGENT_NAME,
@@ -63,6 +59,45 @@ function agentLabel(name: string | undefined | null): string {
 
 function pluralize(n: number, singular: string, plural: string): string {
   return `${n} ${n === 1 ? singular : plural}`;
+}
+
+/**
+ * O bridge Responses (`@openai/agents-openai`) trata itens `message` com
+ * `content` como **array** de partes (`getMessageItem` usa `content.map`).
+ * Nosso app envia texto simples em `content` (histórico WhatsApp); convertemos
+ * para o formato esperado pela API.
+ *
+ * - `user` / `system` / `developer`: partes `input_text`
+ * - `assistant` (histórico reenviado): `output_text` (reprodução de saída do modelo)
+ */
+function normalizeRunInputForOpenAiResponsesModel(
+  runInput: string | AgentInputItem[],
+): string | AgentInputItem[] {
+  if (typeof runInput === "string") {
+    return runInput;
+  }
+
+  return runInput.map((item) => {
+    if (typeof item !== "object" || item === null) {
+      return item;
+    }
+    const o = item as Record<string, unknown>;
+    if (Array.isArray(o.content)) {
+      return item;
+    }
+    const role = typeof o.role === "string" ? o.role : "user";
+    const rawContent = o.content;
+    if (typeof rawContent !== "string" || rawContent.length === 0) {
+      return item;
+    }
+    const partType = role === "assistant" ? "output_text" : "input_text";
+    return {
+      ...o,
+      type: typeof o.type === "string" ? o.type : "message",
+      role,
+      content: [{ type: partType, text: rawContent }],
+    } as AgentInputItem;
+  });
 }
 
 /**
@@ -162,10 +197,9 @@ function summarizeRunInputForDiagnostics(
 function logRunAgentsFailure(params: {
   readonly conversationId: string;
   readonly error: unknown;
-  readonly openAiConversationId: string | undefined;
   readonly runInput: string | AgentInputItem[];
 }): void {
-  const { conversationId, error, openAiConversationId, runInput } = params;
+  const { conversationId, error, runInput } = params;
   const message = error instanceof Error ? error.message : String(error);
   const missingCallId = extractMissingFunctionCallId(message);
   const suspectedStaleToolChain =
@@ -180,17 +214,6 @@ function logRunAgentsFailure(params: {
     conversationId,
     `Exceção: ${message.length > 600 ? `${message.slice(0, 600)}…` : message}`,
   );
-  if (openAiConversationId) {
-    warnAgentLine(
-      conversationId,
-      `OpenAI conversationId (conv_...) retomado: ${openAiConversationId}`,
-    );
-  } else {
-    warnAgentLine(
-      conversationId,
-      "OpenAI conversationId: (ausente — nova session sem thread prévio)",
-    );
-  }
   if (suspectedStaleToolChain) {
     warnAgentLine(
       conversationId,
@@ -198,7 +221,7 @@ function logRunAgentsFailure(params: {
     );
     warnAgentLine(
       conversationId,
-      "Possíveis causas: turno anterior interrompido antes de concluir tools; falha ao persistir a sessão OpenAI no atendimento; conversationId apontando para thread inconsistente; ou concorrência entre dois workers no mesmo atendimento.",
+      "Possíveis causas: turno anterior interrompido antes de concluir tools; histórico de mensagens inconsistente; ou concorrência entre dois workers no mesmo atendimento.",
     );
   }
   warnAgentLine(
@@ -212,8 +235,6 @@ function logRunAgentsFailure(params: {
       level: "warn",
       event: "run_agents_failed",
       conversationId,
-      openAiConversationIdPresent: Boolean(openAiConversationId),
-      openAiConversationId: openAiConversationId ?? null,
       missingFunctionCallId: missingCallId ?? null,
       suspectedStaleResponsesToolChain: suspectedStaleToolChain,
       errorName: error instanceof Error ? error.name : typeof error,
@@ -327,13 +348,13 @@ export function summarizeAgentRunPipeline(
 /**
  * Ponto de entrada da biblioteca. Executa o **orquestrador** (LLM) que decide
  * o handoff para triagem ou consulta processual, com sinais objetivos no
- * contexto (`clientId`, `continuesOpenAiAgentChain`).
+ * contexto (`clientId`, `agenteResponsavelAtendimento`).
  *
  * Responsabilidades desta função:
  *  1. Validar o input via Zod.
  *  2. Montar `AgentRunContext` para uso em ferramentas (MCP, etc).
  *  3. Instanciar o orquestrador com handoffs para triage/process_info.
- *  4. Chamar `run()` do SDK com `OpenAIConversationsSession` por turno.
+ *  4. Chamar `run()` do SDK com o histórico completo já presente em `inputs`.
  *  5. Normalizar a saída para o contrato `RunOutput`.
  *
  * Erros do SDK são propagados diretamente — quem chama (edge function) decide
@@ -352,15 +373,16 @@ export async function runAgents(
     clientId: input.clientId,
     calendarConnectionId: input.calendarConnectionId,
     extra: input.extra,
-    continuesOpenAiAgentChain: Boolean(input.conversationId),
+    agenteResponsavelAtendimento: input.agenteResponsavelAtendimento,
   };
 
   // O SDK aceita `string | AgentInputItem[]`. Quando o chamador (rota
   // `generate-ai-response`) já agregou múltiplas mensagens, repassamos como
   // array para preservar a separação semântica de cada mensagem do batch.
-  const runInput: string | AgentInputItem[] = input.inputs
+  const runInputRaw: string | AgentInputItem[] = input.inputs
     ? (input.inputs as unknown as AgentInputItem[])
     : (input.userMessage as string);
+  const runInput = normalizeRunInputForOpenAiResponsesModel(runInputRaw);
 
   const runner = new Runner();
   const conversationId = input.conversaId;
@@ -368,16 +390,16 @@ export async function runAgents(
   const clientNote = input.clientId
     ? "cliente já vinculado ao cadastro"
     : "cliente ainda não vinculado ao cadastro";
-  const chainNote = context.continuesOpenAiAgentChain
-    ? "retomando a sessão OpenAI existente"
-    : "iniciando nova sessão OpenAI";
+  const agenteNote = context.agenteResponsavelAtendimento
+    ? `agente responsável no atendimento (persistido): ${context.agenteResponsavelAtendimento}`
+    : "sem agente responsável persistido no contexto";
 
   const orchestrator = buildOrchestratorAgent({ env, context });
 
   console.log("");
   logAgentLine(
     conversationId,
-    `Início do atendimento — começando pela ${agentLabel(orchestrator.name)} (${clientNote}; ${chainNote}; ${pluralize(inputsCount, "mensagem recebida", "mensagens recebidas")}).`,
+    `Início do atendimento — começando pela ${agentLabel(orchestrator.name)} (${clientNote}; ${agenteNote}; ${pluralize(inputsCount, "mensagem recebida", "mensagens recebidas")}).`,
   );
 
   runner.on("agent_start", (_runCtx, agent) => {
@@ -436,32 +458,11 @@ export async function runAgents(
     );
   });
 
-  console.log("input", input)
-  
-  const session = new OpenAIConversationsSession({
-    ...(input.conversationId ? { conversationId: input.conversationId } : {}),
-  });
-
-  console.log("session criada", session);
-
-  const runOpts = {
-    context,
-    session,
-    ...(Array.isArray(runInput)
-      ? {
-          // Para batch de mensagens (inputs[]), fixamos explicitamente o merge
-          // history + newItems para evitar ambiguidades em mudanças futuras.
-          sessionInputCallback: (history: AgentInputItem[], newItems: AgentInputItem[]) => [
-            ...history,
-            ...newItems,
-          ],
-        }
-      : {}),
-  };
+  const runOpts = { context };
 
   logAgentLine(
     conversationId,
-    `Chamando runner.run — session OpenAI retomada: ${Boolean(input.conversationId)}; resumo runInput: ${JSON.stringify(summarizeRunInputForDiagnostics(runInput))}`,
+    `Chamando runner.run — histórico stateless (sem OpenAI session); resumo runInput: ${JSON.stringify(summarizeRunInputForDiagnostics(runInput))}`,
   );
 
   let result;
@@ -471,13 +472,10 @@ export async function runAgents(
     logRunAgentsFailure({
       conversationId,
       error,
-      openAiConversationId: input.conversationId,
       runInput,
     });
     throw error;
   }
-
-  const openaiConversationId = await session.getSessionId();
 
   const rawLogDir = resolveAgentRunRawLogPath();
   if (rawLogDir) {
@@ -485,7 +483,7 @@ export async function runAgents(
       conversaId: input.conversaId,
       organizationId: input.organizationId,
       clientId: input.clientId,
-      openaiConversationId,
+      openaiConversationId: undefined,
       model: env.aiModel,
       result,
     });
@@ -519,7 +517,6 @@ export async function runAgents(
     output,
     agentUsed: resolveAgentUsed(result.lastAgent?.name),
     responseId: result.lastResponseId,
-    openaiConversationId,
     usage: extractUsage(result),
   };
 }
@@ -527,7 +524,7 @@ export async function runAgents(
 /**
  * Resolve o nome do último agente para o enum público `AgentId`.
  *
- * Quando o nome não bate com um agente conhecido, assume-se `triage`.
+ * Quando o nome não bate com um agente conhecido, assume-se `orchestrator`.
  */
 function resolveAgentUsed(lastAgentName: string | undefined): AgentId {
   if (lastAgentName === PROCESS_INFO_AGENT_NAME) {
@@ -538,7 +535,11 @@ function resolveAgentUsed(lastAgentName: string | undefined): AgentId {
     return "triage";
   }
 
-  return "triage";
+  if (lastAgentName === ORCHESTRATOR_AGENT_NAME) {
+    return "orchestrator";
+  }
+
+  return "orchestrator";
 }
 
 interface RunResultLike {

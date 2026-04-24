@@ -17,6 +17,8 @@ export interface WhatsappMensagem {
   anexo_url: string | null;
   user_id: string | null;
   created_at: string;
+  /** Preenchido em mensagens novas; legado permanece nulo. */
+  atendimento_id?: string | null;
 }
 
 interface SaveWhatsappMessageParams {
@@ -28,6 +30,8 @@ interface SaveWhatsappMessageParams {
   /** ID externo (vindo da Evolution) — usado p/ deduplicação de envios. */
   messageId?: string | undefined;
   userId?: string | undefined;
+  /** `whatsapp_atendimentos.id` quando conhecido no insert. */
+  atendimentoId?: string | undefined;
 }
 
 /** Insere uma mensagem genérica. Demais helpers chamam aqui. */
@@ -49,6 +53,9 @@ export async function saveWhatsappMessage(
   if (params.messageId) {
     insertData.id = params.messageId;
   }
+  if (params.atendimentoId !== undefined) {
+    insertData.atendimento_id = params.atendimentoId;
+  }
 
   const { data, error } = await supabase
     .from("whatsapp_mensagens")
@@ -67,6 +74,7 @@ export async function saveIncomingMessage(
   content: string,
   userId?: string,
   env?: EnvConfig,
+  atendimentoId?: string,
 ): Promise<WhatsappMensagem> {
   return saveWhatsappMessage(
     {
@@ -76,6 +84,7 @@ export async function saveIncomingMessage(
       tipoMensagem: "texto",
       anexoUrl: undefined,
       userId,
+      atendimentoId,
     },
     env,
   );
@@ -90,6 +99,7 @@ export async function saveOutgoingMessage(
   anexoUrl?: string,
   userId?: string,
   env?: EnvConfig,
+  atendimentoId?: string,
 ): Promise<WhatsappMensagem> {
   return saveWhatsappMessage(
     {
@@ -100,6 +110,7 @@ export async function saveOutgoingMessage(
       anexoUrl,
       messageId,
       userId,
+      atendimentoId,
     },
     env,
   );
@@ -112,6 +123,7 @@ export async function saveChatbotMessage(
   messageType: string = "texto",
   userId?: string,
   env?: EnvConfig,
+  atendimentoId?: string,
 ): Promise<WhatsappMensagem> {
   return saveWhatsappMessage(
     {
@@ -121,6 +133,7 @@ export async function saveChatbotMessage(
       tipoMensagem: messageType,
       anexoUrl: undefined,
       userId,
+      atendimentoId,
     },
     env,
   );
@@ -138,6 +151,7 @@ export async function saveMediaMessage(
   content: string,
   userId?: string,
   env?: EnvConfig,
+  atendimentoId?: string,
 ): Promise<WhatsappMensagem> {
   const sender = fromMe ? "atendente" : "cliente";
 
@@ -149,6 +163,7 @@ export async function saveMediaMessage(
       tipoMensagem: mimeType.split("/")?.[0] || "application",
       anexoUrl: mediaUrl,
       userId,
+      atendimentoId,
     },
     env,
   );
@@ -167,6 +182,61 @@ export async function getConversationMessages(
     .eq("conversa_id", conversaId)
     .order("created_at", { ascending: false })
     .limit(limit)
+    .returns<WhatsappMensagem[]>();
+
+  if (error) throw error;
+  return data ?? [];
+}
+
+/** Une listas por `id` e ordena por `created_at` crescente. */
+export function mergeWhatsappMensagensChronological(
+  a: readonly WhatsappMensagem[],
+  b: readonly WhatsappMensagem[],
+): WhatsappMensagem[] {
+  const byId = new Map<string, WhatsappMensagem>();
+  for (const m of a) {
+    byId.set(m.id, m);
+  }
+  for (const m of b) {
+    byId.set(m.id, m);
+  }
+  return Array.from(byId.values()).sort(
+    (x, y) =>
+      new Date(x.created_at).getTime() - new Date(y.created_at).getTime(),
+  );
+}
+
+/** Busca linhas por id (ex.: mensagens do claim sem `atendimento_id` ainda). */
+export async function getWhatsappMensagensByIds(
+  ids: readonly string[],
+  env?: EnvConfig,
+): Promise<WhatsappMensagem[]> {
+  if (ids.length === 0) return [];
+  const supabase = getSupabaseClient(env);
+  const { data, error } = await supabase
+    .from("whatsapp_mensagens")
+    .select("*")
+    .in("id", [...ids])
+    .returns<WhatsappMensagem[]>();
+
+  if (error) throw error;
+  return data ?? [];
+}
+
+/**
+ * Histórico do atendimento: mensagens já vinculadas por `atendimento_id`,
+ * ordem cronológica crescente.
+ */
+export async function getMensagensByAtendimentoId(
+  atendimentoId: string,
+  env?: EnvConfig,
+): Promise<WhatsappMensagem[]> {
+  const supabase = getSupabaseClient(env);
+  const { data, error } = await supabase
+    .from("whatsapp_mensagens")
+    .select("*")
+    .eq("atendimento_id", atendimentoId)
+    .order("created_at", { ascending: true })
     .returns<WhatsappMensagem[]>();
 
   if (error) throw error;

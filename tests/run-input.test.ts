@@ -14,17 +14,17 @@ describe("RunInputSchema", () => {
     expect(parsed.userMessage).toBe("Olá, preciso de ajuda");
     expect(parsed.conversaId).toBe("conv-platform-1");
     expect(parsed.calendarConnectionId).toBeUndefined();
-    expect(parsed.conversationId).toBeUndefined();
+    expect(parsed.agenteResponsavelAtendimento).toBeUndefined();
   });
 
   it("accepts all optional fields when provided", () => {
     const parsed = RunInputSchema.parse({
       ...validInput,
-      conversationId: "conv_openai_1",
+      agenteResponsavelAtendimento: "process_info",
       calendarConnectionId: "cal-1",
       extra: { clientName: "Maria" },
     });
-    expect(parsed.conversationId).toBe("conv_openai_1");
+    expect(parsed.agenteResponsavelAtendimento).toBe("process_info");
     expect(parsed.calendarConnectionId).toBe("cal-1");
     expect(parsed.extra).toEqual({ clientName: "Maria" });
   });

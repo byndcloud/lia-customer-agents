@@ -1,7 +1,9 @@
 import { Handoff } from "@openai/agents-core";
-import { RECOMMENDED_PROMPT_PREFIX } from "@openai/agents-core/extensions";
+import {
+  RECOMMENDED_PROMPT_PREFIX,
+  removeAllTools,
+} from "@openai/agents-core/extensions";
 import { describe, expect, it } from "vitest";
-import { cleanHandoffHistory } from "../src/agents/handoff-filters.js";
 import {
   buildOrchestratorAgent,
   buildOrchestratorInstructions,
@@ -21,7 +23,7 @@ const context: AgentRunContext = {
   clientId: "cli-1",
   calendarConnectionId: undefined,
   extra: undefined,
-  continuesOpenAiAgentChain: false,
+  agenteResponsavelAtendimento: undefined,
 };
 
 describe("buildOrchestratorAgent", () => {
@@ -36,14 +38,14 @@ describe("buildOrchestratorAgent", () => {
     expect(handoffNames).toEqual(["process_info", "triage"]);
   });
 
-  it("envolve cada handoff em `Handoff` com `cleanHandoffHistory` como inputFilter", () => {
+  it("envolve cada handoff em `Handoff` com `removeAllTools` como inputFilter", () => {
     const orchestrator = buildOrchestratorAgent({ env, context });
 
     expect(orchestrator.handoffs.length).toBe(2);
     for (const entry of orchestrator.handoffs) {
       expect(entry).toBeInstanceOf(Handoff);
       const ho = entry as Handoff;
-      expect(ho.inputFilter).toBe(cleanHandoffHistory);
+      expect(ho.inputFilter).toBe(removeAllTools);
     }
   });
 
@@ -54,29 +56,33 @@ describe("buildOrchestratorAgent", () => {
 });
 
 describe("buildOrchestratorInstructions", () => {
-  it("injeta sinais de clientId e encadeamento OpenAI no texto", () => {
-    const noClientNoChain = buildOrchestratorInstructions({
+  it("injeta sinais de clientId e agente responsável persistido no texto", () => {
+    const noClientNoAgent = buildOrchestratorInstructions({
       conversaId: "c1",
       organizationId: "o1",
       clientId: undefined,
       calendarConnectionId: undefined,
       extra: undefined,
-      continuesOpenAiAgentChain: false,
+      agenteResponsavelAtendimento: undefined,
     });
-    expect(noClientNoChain).toContain("clientId / pessoa identificada): não");
-    expect(noClientNoChain).toContain("Encadeamento desta execução");
-    expect(noClientNoChain).toMatch(/OpenAI[^\n]+: não/);
+    expect(noClientNoAgent).toContain("clientId / pessoa identificada): não");
+    expect(noClientNoAgent).toContain(
+      "Agente IA atualmente responsável por este atendimento",
+    );
+    expect(noClientNoAgent).toContain(
+      "não informado — trate como recepção sem agente especialista persistido",
+    );
 
-    const linkedWithChain = buildOrchestratorInstructions({
+    const linkedWithTriage = buildOrchestratorInstructions({
       conversaId: "c1",
       organizationId: "o1",
       clientId: "p1",
       calendarConnectionId: undefined,
       extra: undefined,
-      continuesOpenAiAgentChain: true,
+      agenteResponsavelAtendimento: "triage",
     });
-    expect(linkedWithChain).toContain("clientId / pessoa identificada): sim");
-    expect(linkedWithChain).toMatch(/OpenAI[^\n]+: sim/);
+    expect(linkedWithTriage).toContain("clientId / pessoa identificada): sim");
+    expect(linkedWithTriage).toContain("`triage`");
   });
 
   it("começa com o RECOMMENDED_PROMPT_PREFIX da SDK", () => {
@@ -86,7 +92,7 @@ describe("buildOrchestratorInstructions", () => {
       clientId: undefined,
       calendarConnectionId: undefined,
       extra: undefined,
-      continuesOpenAiAgentChain: false,
+      agenteResponsavelAtendimento: undefined,
     });
     expect(result.startsWith(RECOMMENDED_PROMPT_PREFIX)).toBe(true);
   });
@@ -98,7 +104,7 @@ describe("buildOrchestratorInstructions", () => {
       clientId: "p1",
       calendarConnectionId: undefined,
       extra: undefined,
-      continuesOpenAiAgentChain: false,
+      agenteResponsavelAtendimento: undefined,
     });
     expect(result).toContain("getLatelyProcess");
     expect(result).toContain("transfer_to_process_info");

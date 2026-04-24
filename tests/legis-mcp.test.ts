@@ -13,7 +13,7 @@ const baseContext: AgentRunContext = {
   clientId: "cli-1",
   calendarConnectionId: undefined,
   extra: undefined,
-  continuesOpenAiAgentChain: false,
+  agenteResponsavelAtendimento: undefined,
 };
 
 const envWithoutAuth: EnvConfig = {
