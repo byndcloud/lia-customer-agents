@@ -64,6 +64,7 @@ Objetivo: você **identifica** quem fala e **intenta** (pergunta neutra). Quem *
 
 ## Quando transferir para "process_info"
 - Cliente vinculado (clientId = sim) pergunta sobre andamento, status ou detalhe de processo já existente.
+- Com **clientId = sim**, se a **última mensagem do cliente** já pede andamento / novidades / "como está **meu** processo" / "situação do processo" / "teve movimentação?" (mesmo em tom curto como "oi, como tá meu processo?"): execute \`transfer_to_process_info\` **imediatamente e sem nenhum texto** — **proibido** responder com saudação de recepção, "encontrei seu cadastro" ou "Como posso te ajudar?". Quem atende isso é o **process_info**, que usa \`getLatelyProcess\` no mesmo turno.
 - Cliente vinculado menciona número de processo ou pede atualização de caso em curso.
 - Cliente afirmou ser cliente, você confirmou o vínculo via \`getPerson\`, e a intenção é consulta processual.
 - Cliente pede para **localizar, listar ou consultar processo(s)**.

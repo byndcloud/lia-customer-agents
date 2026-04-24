@@ -27,9 +27,9 @@ import {
   type RunUsage,
 } from "../types.js";
 import {
-  appendAgentRunRawLogLine,
   buildAgentRunRawLogRecord,
   resolveAgentRunRawLogPath,
+  writeAgentRunRawLogFile,
 } from "./agent-run-raw-log.js";
 import {
   logAgentLine,
@@ -553,8 +553,8 @@ export async function runAgents(
 
   const openaiConversationId = await session.getSessionId();
 
-  const rawLogPath = resolveAgentRunRawLogPath();
-  if (rawLogPath) {
+  const rawLogDir = resolveAgentRunRawLogPath();
+  if (rawLogDir) {
     const rawRecord = buildAgentRunRawLogRecord({
       conversaId: input.conversaId,
       organizationId: input.organizationId,
@@ -563,7 +563,7 @@ export async function runAgents(
       model: env.aiModel,
       result,
     });
-    await appendAgentRunRawLogLine(rawLogPath, rawRecord);
+    await writeAgentRunRawLogFile(rawLogDir, rawRecord, input.conversaId);
   }
 
   const counts = summarizeAgentRunPipeline(conversationId, result.newItems);

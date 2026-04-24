@@ -1,6 +1,8 @@
 import { RECOMMENDED_PROMPT_PREFIX } from "@openai/agents-core/extensions";
-import { beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { vi } from "vitest";
 import type { ChatbotAiConfig } from "../src/db/chatbotAiConfig.js";
+import { buildAgentTemporalContextSection } from "../src/agents/agent-temporal-context.js";
 import {
   PROCESS_INFO_BASE_INSTRUCTIONS,
   PROCESS_INFO_DEFAULT_STYLE_INSTRUCTIONS,
@@ -10,9 +12,18 @@ import { buildProcessInfoInstructions } from "../src/agents/instructions/process
 
 beforeEach(() => {
   __resetInstructionsCacheForTests();
+  vi.useFakeTimers();
+  vi.setSystemTime(new Date("2026-04-22T12:00:00Z"));
+});
+
+afterEach(() => {
+  vi.useRealTimers();
 });
 
 const TRANSHIPMENT_HEADING = "### REGRA ESPECIAL: Transbordo com Opção de Agendamento";
+
+const PROCESS_INFO_CLIENT_UNLINKED_SECTION = `## Sinal do sistema: cliente ainda não vinculado (sem clientId)
+Não há **pessoa vinculada** ao atendimento neste run. Se o cliente pedir "meu processo" sem ter informado CPF/CNPJ confiável na conversa, você pode precisar de \`cpf_cnpj\` em **getLatelyProcess** após tentar \`{}\` se a tool/documentação indicar insuficiência — peça **só** o documento, uma pergunta curta, sem exigir tribunal/vara.`;
 
 function makeConfig(overrides: Partial<ChatbotAiConfig> = {}): ChatbotAiConfig {
   return {
@@ -25,7 +36,7 @@ function makeConfig(overrides: Partial<ChatbotAiConfig> = {}): ChatbotAiConfig {
 }
 
 describe("buildProcessInfoInstructions — sem config", () => {
-  it("retorna PREFIX + BASE + DEFAULT_STYLE quando config é null e não há calendário", () => {
+  it("retorna PREFIX + temporal + BASE + DEFAULT_STYLE quando config é null e não há calendário", () => {
     const result = buildProcessInfoInstructions({
       config: null,
       calendarConnectionId: undefined,
@@ -35,11 +46,25 @@ describe("buildProcessInfoInstructions — sem config", () => {
     expect(result).toContain(PROCESS_INFO_DEFAULT_STYLE_INSTRUCTIONS);
     expect(result).not.toContain(TRANSHIPMENT_HEADING);
     expect(result.startsWith(RECOMMENDED_PROMPT_PREFIX)).toBe(true);
+    expect(result).toContain("## Contexto temporal (âncora do atendimento)");
+    const temporal = buildAgentTemporalContextSection();
     expect(result).toBe(
-      `${RECOMMENDED_PROMPT_PREFIX}\n\n` +
+      `${RECOMMENDED_PROMPT_PREFIX}\n\n${temporal}\n\n${PROCESS_INFO_CLIENT_UNLINKED_SECTION}\n\n` +
         PROCESS_INFO_BASE_INSTRUCTIONS +
         PROCESS_INFO_DEFAULT_STYLE_INSTRUCTIONS,
     );
+  });
+
+  it("com clientLinked: instrui a não pedir CPF antes de getLatelyProcess", () => {
+    const result = buildProcessInfoInstructions({
+      config: null,
+      calendarConnectionId: undefined,
+      clientLinked: true,
+    });
+
+    expect(result).toContain("## Sinal do sistema: cliente já vinculado (clientId)");
+    expect(result).toContain("**É proibido** pedir CPF, CNPJ");
+    expect(result).toContain("getLatelyProcess");
   });
 
   it("anexa bloco de transbordo quando calendarConnectionId está presente", () => {
@@ -152,12 +177,12 @@ describe("buildProcessInfoInstructions — tipo_atualizacao", () => {
 });
 
 describe("PROCESS_INFO_BASE_INSTRUCTIONS — blocos críticos", () => {
-  it("contém o bloco 'ENTRADA VIA HANDOFF (CONTINUIDADE)' com aberturas banidas", () => {
+  it("contém o bloco 'ENTRADA VIA HANDOFF (CONTINUIDADE)' e regra determinística getLatelyProcess", () => {
     expect(PROCESS_INFO_BASE_INSTRUCTIONS).toContain(
       "ENTRADA VIA HANDOFF (CONTINUIDADE)",
     );
-    expect(PROCESS_INFO_BASE_INSTRUCTIONS).toContain('"Sou a Lia"');
-    expect(PROCESS_INFO_BASE_INSTRUCTIONS).toContain('"Em que posso te ajudar?"');
+    expect(PROCESS_INFO_BASE_INSTRUCTIONS).toContain("REGRA DETERMINÍSTICA");
+    expect(PROCESS_INFO_BASE_INSTRUCTIONS).toContain("getLatelyProcess");
   });
 
   it("contém o bloco 'AGIR ANTES DE FALAR' com 'Frases banidas de promessa'", () => {

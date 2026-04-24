@@ -35,6 +35,7 @@ describe("buildTriageAgent", () => {
     expect(typeof agent.instructions).toBe("string");
     const text = agent.instructions as string;
     expect(text.startsWith(RECOMMENDED_PROMPT_PREFIX)).toBe(true);
+    expect(text).toContain("## Contexto temporal (âncora do atendimento)");
     expect(text).toContain(TRIAGE_AGENT_INSTRUCTIONS);
   });
 });

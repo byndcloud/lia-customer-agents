@@ -5,8 +5,6 @@ import { RunInputSchema } from "../../types.js";
 
 export interface RunRouterDeps {
   env: EnvConfig;
-  /** Permite mockar `runAgents` em testes. */
-  runAgentsImpl?: typeof runAgents;
 }
 
 /**
@@ -18,14 +16,13 @@ export interface RunRouterDeps {
  */
 export function buildRunRouter(deps: RunRouterDeps): Router {
   const router = Router();
-  const runImpl = deps.runAgentsImpl ?? runAgents;
 
   router.post(
     "/",
     async (req: Request, res: Response, next: NextFunction) => {
       try {
         const input = RunInputSchema.parse(req.body);
-        const result = await runImpl(input, { env: deps.env });
+        const result = await runAgents(input, { env: deps.env });
         res.status(200).json(result);
       } catch (error) {
         next(error);

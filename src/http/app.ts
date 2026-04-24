@@ -7,7 +7,6 @@ import express, {
 } from "express";
 import { ZodError } from "zod";
 import { loadEnv, type EnvConfig } from "../config/env.js";
-import { runAgents } from "../runtime/run-agents.js";
 import {
   AuthConfigError,
   UnauthorizedError,
@@ -23,13 +22,11 @@ import { buildWebhookEvolutionRouter } from "./routes/webhookEvolution.js";
 import { buildInternalErrorLogDetail } from "./internalErrorLog.js";
 
 /**
- * Dependências injetáveis no app (facilita testes).
+ * Parâmetros opcionais para montar o app (ex.: `env` em testes).
  */
 export interface BuildAppParams {
   /** Configuração de ambiente. Quando omitida, é carregada via `loadEnv()`. */
   readonly env?: EnvConfig;
-  /** Implementação de `runAgents` (substituível em testes). */
-  readonly runAgentsImpl?: typeof runAgents;
 }
 
 /**
@@ -49,7 +46,6 @@ export interface BuildAppParams {
  */
 export function buildApp(params: BuildAppParams = {}): Express {
   const env = params.env ?? loadEnv();
-  const runImpl = params.runAgentsImpl ?? runAgents;
 
   const app = express();
   app.disable("x-powered-by");
@@ -73,11 +69,11 @@ export function buildApp(params: BuildAppParams = {}): Express {
     res.status(200).json({ status: "ok" });
   });
 
-  app.use("/run", buildRunRouter({ env, runAgentsImpl: runImpl }));
+  app.use("/run", buildRunRouter({ env }));
   app.use("/webhook-evolution", buildWebhookEvolutionRouter({ env }));
   app.use(
     "/generate-ai-response",
-    buildGenerateAiResponseRouter({ env, runAgentsImpl: runImpl }),
+    buildGenerateAiResponseRouter({ env }),
   );
   app.use("/deliver-response", buildDeliverResponseRouter({ env }));
   app.use("/followup-30min", buildFollowup30minRouter({ env }));

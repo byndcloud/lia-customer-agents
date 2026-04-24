@@ -1,11 +1,13 @@
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { mkdtemp, readdir, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import {
-  appendAgentRunRawLogLine,
+  buildAgentRunLogFileName,
   buildAgentRunRawLogRecord,
+  normalizeAgentRunRawLogDir,
   resolveAgentRunRawLogPath,
+  writeAgentRunRawLogFile,
 } from "../src/runtime/agent-run-raw-log.js";
 
 describe("resolveAgentRunRawLogPath", () => {
@@ -33,14 +35,20 @@ describe("resolveAgentRunRawLogPath", () => {
 
   it("usa caminho explícito quando AGENT_RUN_RAW_LOG_PATH está definido", () => {
     delete process.env.AGENT_RUN_RAW_LOG_DISABLE;
-    process.env.AGENT_RUN_RAW_LOG_PATH = "/tmp/custom.ndjson";
-    expect(resolveAgentRunRawLogPath()).toBe("/tmp/custom.ndjson");
+    process.env.AGENT_RUN_RAW_LOG_PATH = "/tmp/custom-agent-logs";
+    expect(resolveAgentRunRawLogPath()).toBe("/tmp/custom-agent-logs");
   });
 
-  it("usa logs/agent-runs.ndjson por padrão", () => {
+  it("remove sufixo .ndjson legado para obter o diretório", () => {
+    delete process.env.AGENT_RUN_RAW_LOG_DISABLE;
+    process.env.AGENT_RUN_RAW_LOG_PATH = "/tmp/out/agent-runs.ndjson";
+    expect(resolveAgentRunRawLogPath()).toBe("/tmp/out/agent-runs");
+  });
+
+  it("usa logs/agent-runs por padrão (diretório)", () => {
     delete process.env.AGENT_RUN_RAW_LOG_DISABLE;
     delete process.env.AGENT_RUN_RAW_LOG_PATH;
-    expect(resolveAgentRunRawLogPath()).toBe("logs/agent-runs.ndjson");
+    expect(resolveAgentRunRawLogPath()).toBe("logs/agent-runs");
   });
 });
 
@@ -109,13 +117,40 @@ describe("buildAgentRunRawLogRecord", () => {
   });
 });
 
-describe("appendAgentRunRawLogLine", () => {
-  it("grava uma linha NDJSON válida", async () => {
+describe("writeAgentRunRawLogFile", () => {
+  it("grava um arquivo JSON formatado por execução", async () => {
     const dir = await mkdtemp(join(tmpdir(), "lia-raw-log-"));
-    const file = join(dir, "out.ndjson");
-    await appendAgentRunRawLogLine(file, { k: 1, s: "x" });
-    const txt = await readFile(file, "utf8");
-    expect(JSON.parse(txt.trim())).toEqual({ k: 1, s: "x" });
+    const conversaId = "6560983d-40ea-4de1-bffd-4530a383b561";
+    const written = await writeAgentRunRawLogFile(
+      dir,
+      { k: 1, nested: { a: true } },
+      conversaId,
+    );
+    expect(written).toBeDefined();
+    const files = await readdir(dir);
+    expect(files).toHaveLength(1);
+    expect(files[0]).toMatch(/^agent-run_.*\.json$/);
+    const txt = await readFile(join(dir, files[0]!), "utf8");
+    expect(txt).toContain("\n  ");
+    expect(JSON.parse(txt)).toEqual({ k: 1, nested: { a: true } });
     await rm(dir, { recursive: true });
+  });
+});
+
+describe("normalizeAgentRunRawLogDir", () => {
+  it("mantém diretórios sem sufixo .ndjson", () => {
+    expect(normalizeAgentRunRawLogDir("logs/agent-runs")).toBe("logs/agent-runs");
+  });
+
+  it("remove apenas sufixo .ndjson", () => {
+    expect(normalizeAgentRunRawLogDir("logs/foo.ndjson")).toBe("logs/foo");
+  });
+});
+
+describe("buildAgentRunLogFileName", () => {
+  it("inclui prefixo agent-run e extensão .json", () => {
+    const name = buildAgentRunLogFileName("abc-123");
+    expect(name.startsWith("agent-run_")).toBe(true);
+    expect(name.endsWith(".json")).toBe(true);
   });
 });

@@ -60,6 +60,7 @@ export function buildProcessInfoAgent(
         config,
         calendarConnectionId: ctx?.calendarConnectionId,
         organizationId: ctx?.organizationId,
+        clientLinked: Boolean(ctx?.clientId),
       });
     },
     model: params.env.aiModel,

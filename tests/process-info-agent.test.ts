@@ -52,6 +52,7 @@ describe("buildProcessInfoAgent — instructions dinâmicas", () => {
     )(runContext, agent);
 
     expect(fetcher).toHaveBeenCalledWith("org-1", env);
+    expect(instructions).toContain("## Sinal do sistema: cliente já vinculado (clientId)");
     expect(instructions).toContain("Acolhedor, empático");
     expect(instructions).toContain("Você pode usar termos técnicos");
     expect(instructions).toContain("TODAS as movimentações");

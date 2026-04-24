@@ -1,4 +1,5 @@
 import { RECOMMENDED_PROMPT_PREFIX } from "@openai/agents-core/extensions";
+import { buildAgentTemporalContextSection } from "../agent-temporal-context.js";
 import type { ChatbotAiConfig } from "../../db/chatbotAiConfig.js";
 import {
   getCachedInstructions,
@@ -19,6 +20,11 @@ export interface BuildProcessInfoInstructionsParams {
   /** Quando presente, anexa o bloco de transbordo com agendamento. */
   readonly calendarConnectionId?: string | undefined;
   /**
+   * `true` quando `AgentRunContext.clientId` está definido (pessoa já vinculada
+   * no atendimento). Afeta o bloco de identificação fora do cache.
+   */
+  readonly clientLinked?: boolean | undefined;
+  /**
    * Quando presente, ativa o cache em memória da string final (TTL 10 min).
    * Sem org o build é executado toda vez — útil em testes e chamadas
    * sintéticas.
@@ -38,39 +44,73 @@ export interface BuildProcessInfoInstructionsParams {
  *  3. Bloco de transbordo (`getTranshipmentMenuInstructions()`) quando há
  *     `calendarConnectionId`.
  *
- * Quando `organizationId` é passado, o resultado é cacheado por até 10 min,
- * invalidando automaticamente se a config ou a presença do calendário mudar.
+ * O bloco de **data atual** (`buildAgentTemporalContextSection`) é montado a
+ * cada chamada e não entra no cache (TTL), para referências relativas do
+ * cliente permanecerem corretas.
+ *
+ * Quando `organizationId` é passado, o **corpo** estático (sem prefixo
+ * recomendado, sem bloco temporal e sem bloco de vínculo do cliente) é
+ * cacheado por até 10 min, invalidando automaticamente se a config ou a
+ * presença do calendário mudar.
  */
 export function buildProcessInfoInstructions(
   params: BuildProcessInfoInstructionsParams,
 ): string {
-  const { config, calendarConnectionId, organizationId } = params;
+  const { config, calendarConnectionId, organizationId, clientLinked } =
+    params;
   const hasCalendar = Boolean(calendarConnectionId);
+  const linked = Boolean(clientLinked);
 
   if (organizationId) {
-    const cached = getCachedInstructions(organizationId, config, hasCalendar);
-    if (cached) return cached;
+    const cachedBody = getCachedInstructions(organizationId, config, hasCalendar);
+    if (cachedBody) {
+      return finalizeProcessInfoInstructions(cachedBody, linked);
+    }
   }
 
-  const instructions = composeInstructions(config, hasCalendar);
+  const body = composeProcessInfoInstructionBody(config, hasCalendar);
 
   if (organizationId) {
-    setCachedInstructions(organizationId, instructions, config, hasCalendar);
+    setCachedInstructions(organizationId, body, config, hasCalendar);
   }
 
-  return instructions;
+  return finalizeProcessInfoInstructions(body, linked);
 }
 
-function composeInstructions(
+/**
+ * Bloco fora do cache: o modelo deve obedecer ao vínculo real do run, não só
+ * ao texto genérico da base.
+ */
+function buildProcessInfoClientLinkSection(clientLinked: boolean): string {
+  if (clientLinked) {
+    return `## Sinal do sistema: cliente já vinculado (clientId)
+O atendimento já tem **pessoa identificada no cadastro** do escritório (headers / contexto técnico). Para pedidos de andamento, "como está **meu** processo", situação ou listagem de processos **desse** cliente:
+- Chame **getLatelyProcess** no **mesmo turno**, em geral com argumentos \`{}\` (vazio) — o backend resolve pelo vínculo.
+- **É proibido** pedir CPF, CNPJ ou "confirmar documento" **antes** dessa chamada nem como substituto dela.
+- Só peça CPF/CNPJ se, **depois** do retorno da tool, houver indicação explícita de que a identificação falhou ou se for necessário desambiguar entre **várias pessoas** (caso raro com clientId já definido).`;
+  }
+
+  return `## Sinal do sistema: cliente ainda não vinculado (sem clientId)
+Não há **pessoa vinculada** ao atendimento neste run. Se o cliente pedir "meu processo" sem ter informado CPF/CNPJ confiável na conversa, você pode precisar de \`cpf_cnpj\` em **getLatelyProcess** após tentar \`{}\` se a tool/documentação indicar insuficiência — peça **só** o documento, uma pergunta curta, sem exigir tribunal/vara.`;
+}
+
+function finalizeProcessInfoInstructions(
+  body: string,
+  clientLinked: boolean,
+): string {
+  const temporal = buildAgentTemporalContextSection();
+  const clientSection = buildProcessInfoClientLinkSection(clientLinked);
+  return `${RECOMMENDED_PROMPT_PREFIX}\n\n${temporal}\n\n${clientSection}\n\n${body}`;
+}
+
+function composeProcessInfoInstructionBody(
   config: ChatbotAiConfig | null,
   hasCalendar: boolean,
 ): string {
-  const prefix = `${RECOMMENDED_PROMPT_PREFIX}\n\n`;
   const transhipment = hasCalendar ? getTranshipmentMenuInstructions() : "";
 
   if (!config) {
     return (
-      prefix +
       PROCESS_INFO_BASE_INSTRUCTIONS +
       PROCESS_INFO_DEFAULT_STYLE_INSTRUCTIONS +
       transhipment
@@ -78,7 +118,6 @@ function composeInstructions(
   }
 
   return (
-    prefix +
     PROCESS_INFO_BASE_INSTRUCTIONS +
     buildStyleInstructions(config.tom_voz) +
     buildVocabularyInstructions(config.vocabulario) +

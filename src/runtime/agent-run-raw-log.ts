@@ -2,11 +2,15 @@
  * Persistência opcional do resultado bruto de `runner.run` (OpenAI Agents SDK).
  *
  * Variáveis de ambiente:
- * - `AGENT_RUN_RAW_LOG_PATH` — arquivo NDJSON (uma linha JSON por run). Padrão: `logs/agent-runs.ndjson`.
+ * - `AGENT_RUN_RAW_LOG_PATH` — diretório onde cada execução gera um arquivo JSON
+ *   formatado (indentação). Padrão: `logs/agent-runs`.
+ *   Se terminar em `.ndjson` (config legada de arquivo único), usa o caminho **sem**
+ *   esse sufixo como diretório (ex.: `logs/agent-runs.ndjson` → grava em `logs/agent-runs/`).
  * - `AGENT_RUN_RAW_LOG_DISABLE` — se `1`, não grava arquivo.
  */
 
-import { appendFile, mkdir } from "node:fs/promises";
+import { randomUUID } from "node:crypto";
+import { mkdir, writeFile } from "node:fs/promises";
 import path from "node:path";
 
 type Host = { process?: { env?: Record<string, string | undefined> } };
@@ -16,11 +20,21 @@ function readEnv(name: string): string | undefined {
   return typeof v === "string" && v.length > 0 ? v : undefined;
 }
 
+/** Normaliza caminho legado `*.ndjson` (arquivo único) para diretório de gravação. */
+export function normalizeAgentRunRawLogDir(configured: string): string {
+  if (configured.endsWith(".ndjson")) {
+    return configured.slice(0, -".ndjson".length);
+  }
+  return configured;
+}
+
+/** Diretório de saída; `undefined` quando logging está desligado. */
 export function resolveAgentRunRawLogPath(): string | undefined {
   if (readEnv("AGENT_RUN_RAW_LOG_DISABLE") === "1") {
     return undefined;
   }
-  return readEnv("AGENT_RUN_RAW_LOG_PATH") ?? "logs/agent-runs.ndjson";
+  const raw = readEnv("AGENT_RUN_RAW_LOG_PATH") ?? "logs/agent-runs";
+  return normalizeAgentRunRawLogDir(raw);
 }
 
 function jsonReplacer(_key: string, value: unknown): unknown {
@@ -170,33 +184,54 @@ function serializeRunItem(item: unknown): unknown {
 }
 
 /**
- * Anexa uma linha NDJSON ao arquivo configurado. Falhas de I/O são engolidas
- * (log síncrono no stderr) para não derrubar o atendimento.
+ * Nome de arquivo por execução: timestamp ISO seguro + trecho da conversa + sufixo aleatório.
  */
-export async function appendAgentRunRawLogLine(
-  logPath: string,
+export function buildAgentRunLogFileName(conversaId: string): string {
+  const ts = new Date().toISOString().replace(/[:.]/g, "-");
+  const convSlug = conversaId.replace(/[^a-zA-Z0-9-_]/g, "").slice(0, 16) || "no-conv";
+  return `agent-run_${ts}_${convSlug}_${randomUUID().slice(0, 8)}.json`;
+}
+
+/**
+ * Grava um JSON formatado (2 espaços) em `logDir`, um arquivo por chamada a `runner.run`.
+ * Falhas de I/O são engolidas (stderr) para não derrubar o atendimento.
+ *
+ * @returns caminho absoluto do arquivo gravado, ou `undefined` se a serialização/gravação falhou antes de concluir
+ */
+export async function writeAgentRunRawLogFile(
+  logDir: string,
   record: Record<string, unknown>,
-): Promise<void> {
-  let line: string;
+  conversaId: string,
+): Promise<string | undefined> {
+  let body: string;
   try {
-    line = `${JSON.stringify(record, jsonReplacer)}\n`;
+    body = `${JSON.stringify(record, jsonReplacer, 2)}\n`;
   } catch (e) {
-    line = `${JSON.stringify({
-      version: 1,
-      at: new Date().toISOString(),
-      error: "top_level_serialize_failed",
-      message: e instanceof Error ? e.message : String(e),
-    })}\n`;
+    body = `${JSON.stringify(
+      {
+        version: 1,
+        at: new Date().toISOString(),
+        error: "top_level_serialize_failed",
+        message: e instanceof Error ? e.message : String(e),
+      },
+      jsonReplacer,
+      2,
+    )}\n`;
   }
 
+  const fileName = buildAgentRunLogFileName(conversaId);
+  const filePath = path.join(logDir, fileName);
+
   try {
-    await mkdir(path.dirname(logPath), { recursive: true });
-    await appendFile(logPath, line, "utf8");
+    await mkdir(logDir, { recursive: true });
+    await writeFile(filePath, body, "utf8");
+    return filePath;
   } catch (e) {
     console.error(
       "[agent-run-raw-log] falha ao gravar arquivo:",
-      logPath,
+      filePath,
       e instanceof Error ? e.message : e,
     );
+    return undefined;
   }
 }

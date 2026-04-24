@@ -1,7 +1,9 @@
 import type { ChatbotAiConfig } from "../../db/chatbotAiConfig.js";
 
 /**
- * Cache da string final de instruções do agente `process_info`.
+ * Cache do **corpo** estático de instruções do agente `process_info` (sem
+ * `RECOMMENDED_PROMPT_PREFIX` e sem o bloco de data atual — esse bloco é
+ * acrescentado em toda montagem final).
  *
  * Espelha o comportamento de `_shared/chatbot/instructionsCache.ts` da edge
  * function `chat-messages`, com uma correção: o hash inclui `hasCalendar`
@@ -13,6 +15,7 @@ import type { ChatbotAiConfig } from "../../db/chatbotAiConfig.js";
  * eviction por tamanho — só expira por TTL ou por mudança de hash.
  */
 interface CachedInstructions {
+  /** Corpo estático (base + estilo + transbordo); sem prefixo nem temporal. */
   instructions: string;
   configHash: string;
   timestamp: number;
@@ -64,6 +67,9 @@ export function getCachedInstructions(
     return null;
   }
 
+  console.log(
+    `[instructions-cache] Pega instruções cacheadas — organizacaoId=${organizationId}`,
+  );
   return cached.instructions;
 }
 
