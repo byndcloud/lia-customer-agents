@@ -224,75 +224,6 @@ function logRunAgentsFailure(params: {
 }
 
 /**
- * Registra entrada do run, contexto do SDK e parâmetros de ambiente relevantes
- * para agentes/MCP (sem valor de segredos).
- */
-function logRunAgentsDebug(params: {
-  readonly conversationId: string;
-  readonly input: RunInput;
-  readonly context: AgentRunContext;
-  readonly env: EnvConfig;
-  readonly runInput: string | AgentInputItem[];
-}): void {
-  const { conversationId, input, context, env, runInput } = params;
-  logAgentLine(conversationId, "--- Debug runAgents (entrada + ambiente) ---");
-  logAgentLine(conversationId, `modelo (OPENAI / aiModel): ${env.aiModel}`);
-  logAgentLine(
-    conversationId,
-    `MCP_SERVER_URL: ${env.mcpServerUrl ?? "(ausente — run vai falhar ao montar tool)"}`,
-  );
-  logAgentLine(
-    conversationId,
-    `MCP_SERVER_API_KEY: ${env.mcpServerApiKey ? "definida" : "ausente"}`,
-  );
-  logAgentLine(conversationId, `organizacaoId: ${input.organizationId}`);
-  logAgentLine(
-    conversationId,
-    `clientId: ${input.clientId ?? "(ausente — sem X-Client-Id no MCP)"}`,
-  );
-  logAgentLine(
-    conversationId,
-    `calendarConnectionId: ${input.calendarConnectionId ?? "(ausente)"}`,
-  );
-  logAgentLine(
-    conversationId,
-    `openaiConversationId (conv_...): ${input.conversationId ?? "(ausente — session nova)"}`,
-  );
-  logAgentLine(
-    conversationId,
-    `context.continuesOpenAiAgentChain: ${String(context.continuesOpenAiAgentChain)}`,
-  );
-  logAgentLine(
-    conversationId,
-    `extra: ${input.extra ? JSON.stringify(input.extra) : "(nenhum)"}`,
-  );
-
-  if (typeof runInput === "string") {
-    logAgentTextBlock(
-      conversationId,
-      "Mensagem(ns) de usuário enviada(s) ao runner (string única):",
-      runInput,
-    );
-  } else {
-    logAgentLine(
-      conversationId,
-      `Mensagem(ns) de usuário enviada(s) ao runner (${runInput.length} item(ns) no array):`,
-    );
-    runInput.forEach((item, i) => {
-      const content =
-        typeof item === "object" &&
-        item !== null &&
-        "content" in item &&
-        typeof (item as { content: unknown }).content === "string"
-          ? (item as { content: string }).content
-          : JSON.stringify(item);
-      logAgentTextBlock(conversationId, `  [${i}] conteúdo:`, content);
-    });
-  }
-  logAgentLine(conversationId, "--- Fim debug runAgents entrada ---");
-}
-
-/**
  * Percorre `newItems` do `RunResult`, avisa sobre respostas vazias de cada
  * agente e devolve contadores agregados da execução.
  */
@@ -441,14 +372,6 @@ export async function runAgents(
     ? "retomando a sessão OpenAI existente"
     : "iniciando nova sessão OpenAI";
 
-  logRunAgentsDebug({
-    conversationId,
-    input,
-    context,
-    env,
-    runInput,
-  });
-
   const orchestrator = buildOrchestratorAgent({ env, context });
 
   console.log("");
@@ -513,10 +436,13 @@ export async function runAgents(
     );
   });
 
+  console.log("input", input)
+  
   const session = new OpenAIConversationsSession({
-    ...(env.openaiApiKey ? { apiKey: env.openaiApiKey } : {}),
     ...(input.conversationId ? { conversationId: input.conversationId } : {}),
   });
+
+  console.log("session criada", session);
 
   const runOpts = {
     context,

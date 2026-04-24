@@ -3,9 +3,10 @@ import { RECOMMENDED_PROMPT_PREFIX } from "@openai/agents-core/extensions";
 import type { EnvConfig } from "../config/env.js";
 import { buildLegisMcpTool } from "../mcp/legis-mcp.js";
 import type { AgentRunContext } from "../types.js";
-import { cleanHandoffHistory } from "./handoff-filters.js";
 import { buildProcessInfoAgent } from "./process-info.agent.js";
 import { buildTriageAgent } from "./triage.agent.js";
+import { removeAllTools } from '@openai/agents-core/extensions';
+
 
 export const ORCHESTRATOR_AGENT_NAME = "orchestrator";
 
@@ -15,7 +16,7 @@ export const ORCHESTRATOR_AGENT_NAME = "orchestrator";
  * sem enxergar ferramentas de processo/transbordo do especialista.
  */
 export const ORCHESTRATOR_ALLOWED_MCP_TOOLS: ReadonlyArray<string> = [
-  "getPerson",
+  "getPerson", "transhipment"
 ];
 
 /**
@@ -141,6 +142,8 @@ export function buildOrchestratorAgent(params: BuildOrchestratorAgentParams) {
     context: params.context,
   });
 
+  console.log("processInfoAgent", processInfoAgent);
+
   const legisMcp = buildLegisMcpTool({
     env: params.env,
     context: params.context,
@@ -155,8 +158,11 @@ export function buildOrchestratorAgent(params: BuildOrchestratorAgentParams) {
       ),
     model: params.env.aiModel,
     handoffs: [
-      handoff(triageAgent, { inputFilter: cleanHandoffHistory }),
-      handoff(processInfoAgent, { inputFilter: cleanHandoffHistory }),
+      handoff(processInfoAgent, {
+        inputFilter: removeAllTools,
+      }),
+      triageAgent,
+      
     ],
     tools: [legisMcp],
   });

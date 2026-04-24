@@ -17,7 +17,7 @@ import type {
 export const PROCESS_INFO_AGENT_NAME = "process_info";
 
 export const PROCESS_INFO_AGENT_HANDOFF_DESCRIPTION =
-  "Atende clientes via WhatsApp para consultar e informar sobre o andamento de processos judiciais existentes, utilizando exclusivamente os dados retornados pelas ferramentas do sistema.";
+  "Atende clientes que desejam consultar o andamento de seus processos judiciais existentes.";
 
 /**
  * Núcleo das instruções — sempre presente, independe da config da org.
