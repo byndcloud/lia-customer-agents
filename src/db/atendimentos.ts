@@ -20,6 +20,7 @@ export interface EnsureActiveServiceResult {
 const KNOWN_AGENT_IDS = new Set<string>([
   "orchestrator",
   "triage",
+  "triage_trabalhista",
   "process_info",
 ]);
 
@@ -43,7 +44,10 @@ export interface ActiveServiceConversationThread {
 export interface ActiveChatbotServiceRow {
   readonly atendimentoId: string;
   readonly iniciadoEm: string;
-  /** `orchestrator` | `triage` | `process_info` — alinhado a `AgentId`. */
+  /**
+   * `orchestrator` | `triage` | `triage_trabalhista` | `process_info`
+   * — alinhado a `AgentId`.
+   */
   readonly agenteResponsavel: AgentId;
 }
 

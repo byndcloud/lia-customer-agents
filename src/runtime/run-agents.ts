@@ -13,6 +13,7 @@ import {
 } from "../agents/orchestrator.agent.js";
 import { PROCESS_INFO_AGENT_NAME } from "../agents/instructions/process-info.instructions.js";
 import { TRIAGE_AGENT_NAME } from "../agents/instructions/triage.instructions.js";
+import { TRIAGE_TRABALHISTA_AGENT_NAME } from "../agents/instructions/triage-trabalhista.instructions.js";
 import { loadEnv, type EnvConfig } from "../config/env.js";
 import {
   RunInputSchema,
@@ -48,7 +49,8 @@ interface PipelineCounts {
 /** Nomes técnicos dos agentes traduzidos para apelidos lidos nos logs. */
 const AGENT_LABEL: Record<string, string> = {
   [ORCHESTRATOR_AGENT_NAME]: "recepção",
-  [TRIAGE_AGENT_NAME]: "triagem",
+  [TRIAGE_AGENT_NAME]: "triagem simples",
+  [TRIAGE_TRABALHISTA_AGENT_NAME]: "triagem trabalhista",
   [PROCESS_INFO_AGENT_NAME]: "consulta processual",
 };
 
@@ -533,6 +535,10 @@ function resolveAgentUsed(lastAgentName: string | undefined): AgentId {
 
   if (lastAgentName === TRIAGE_AGENT_NAME) {
     return "triage";
+  }
+
+  if (lastAgentName === TRIAGE_TRABALHISTA_AGENT_NAME) {
+    return "triage_trabalhista";
   }
 
   if (lastAgentName === ORCHESTRATOR_AGENT_NAME) {

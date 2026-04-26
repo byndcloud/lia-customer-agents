@@ -29,6 +29,14 @@ describe("RunInputSchema", () => {
     expect(parsed.extra).toEqual({ clientName: "Maria" });
   });
 
+  it("accepts triage_trabalhista as persisted responsible agent", () => {
+    const parsed = RunInputSchema.parse({
+      ...validInput,
+      agenteResponsavelAtendimento: "triage_trabalhista",
+    });
+    expect(parsed.agenteResponsavelAtendimento).toBe("triage_trabalhista");
+  });
+
   it("rejects an empty userMessage", () => {
     expect(() =>
       RunInputSchema.parse({ ...validInput, userMessage: "" }),

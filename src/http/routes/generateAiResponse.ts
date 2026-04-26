@@ -40,7 +40,8 @@ const CHATBOT_QUEUE_SELF_RETRY_MAX = 12;
 /** Rótulos para a mensagem de sistema do agente responsável no atendimento. */
 const AGENT_SYSTEM_LABEL: Record<AgentId, string> = {
   orchestrator: "recepção (orquestrador)",
-  triage: "triagem",
+  triage: "triagem simples",
+  triage_trabalhista: "triagem trabalhista",
   process_info: "consulta processual",
 };
 

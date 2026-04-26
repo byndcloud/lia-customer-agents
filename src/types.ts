@@ -4,12 +4,14 @@ import { z } from "zod";
  * Identificadores dos agentes do fluxo principal.
  *
  * `orchestrator` — recepção / orquestrador (handoff para especialistas)
- * `triage` — triagem de casos trabalhistas
+ * `triage` — triagem simples/central (fallback + roteamento)
+ * `triage_trabalhista` — triagem especialista para Direito do Trabalho
  * `process_info` — consulta a processos já existentes
  */
 export const AgentIdSchema = z.enum([
   "orchestrator",
   "triage",
+  "triage_trabalhista",
   "process_info",
 ]);
 export type AgentId = z.infer<typeof AgentIdSchema>;
