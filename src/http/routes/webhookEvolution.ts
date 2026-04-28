@@ -71,11 +71,46 @@ interface MessageProcessingState {
   audioData?: { storageUrl: string; mimetype: string };
 }
 
+function headerValueToString(
+  value: string | string[] | undefined,
+): string | undefined {
+  if (value === undefined) return undefined;
+  return Array.isArray(value) ? value.join(", ") : value;
+}
+
+/** Diagnóstico de o que chegou no POST `/webhook-evolution` (após auth global). */
+function logWebhookEvolutionIncoming(req: Request): void {
+  const authRaw = headerValueToString(req.headers.authorization);
+  const logSecrets = process.env.LOG_SENSITIVE_REQUEST === "1";
+  console.info(
+    JSON.stringify({
+      level: "info",
+      event: "webhook_evolution_request",
+      method: req.method,
+      path: req.path,
+      originalUrl: req.originalUrl,
+      ip: req.ip,
+      forwardedFor: req.headers["x-forwarded-for"],
+      userAgent: req.headers["user-agent"],
+      cloudTrace: req.headers["x-cloud-trace-context"],
+      hasAuthorizationHeader: authRaw !== undefined,
+      authorizationPreview: authRaw
+        ? logSecrets
+          ? authRaw
+          : `[redacted prefix=${authRaw.slice(0, 12)}… len=${authRaw.length}]`
+        : null,
+      contentType: req.headers["content-type"],
+      contentLength: req.headers["content-length"],
+    }),
+  );
+}
+
 async function handleWebhook(
   req: Request,
   res: Response,
   deps: WebhookEvolutionDeps,
 ): Promise<void> {
+  logWebhookEvolutionIncoming(req);
   const body = (req.body ?? {}) as EvolutionWebhookData;
 
   if (
