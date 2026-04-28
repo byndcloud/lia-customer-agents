@@ -7,7 +7,10 @@ import {
   TRIAGE_AGENT_SIMPLE_INSTRUCTIONS,
   buildTriageAgentInstructions,
 } from "../src/agents/instructions/triage.instructions.js";
-import { TRIAGE_TRABALHISTA_AGENT_INSTRUCTIONS } from "../src/agents/instructions/triage-trabalhista.instructions.js";
+import {
+  TRIAGE_TRABALHISTA_AGENT_INSTRUCTIONS,
+  buildTriageTrabalhistaInstructionsWithExtras,
+} from "../src/agents/instructions/triage-trabalhista.instructions.js";
 import type { EnvConfig } from "../src/config/env.js";
 import type { AgentRunContext } from "../src/types.js";
 
@@ -27,20 +30,20 @@ const context: AgentRunContext = {
 };
 
 describe("TRIAGE_AGENT_INSTRUCTIONS — modo especialista (com handoffs)", () => {
-  it("posiciona a regra de continuidade no topo, antes das demais regras", () => {
-    const continuityIdx = TRIAGE_AGENT_INSTRUCTIONS.indexOf(
-      "ENTRADA VIA HANDOFF (CONTINUIDADE)",
+  it("posiciona orquestração para especialista antes das regras centrais", () => {
+    const orchIdx = TRIAGE_AGENT_INSTRUCTIONS.indexOf(
+      "REGRA CRÍTICA: ORQUESTRAÇÃO PARA ESPECIALISTA",
     );
     const centralRulesIdx = TRIAGE_AGENT_INSTRUCTIONS.indexOf("REGRAS CENTRAIS");
 
-    expect(continuityIdx).toBeGreaterThan(0);
-    expect(centralRulesIdx).toBeGreaterThan(continuityIdx);
+    expect(orchIdx).toBeGreaterThan(0);
+    expect(centralRulesIdx).toBeGreaterThan(orchIdx);
   });
 
-  it("lista aberturas proibidas explícitas", () => {
-    expect(TRIAGE_AGENT_INSTRUCTIONS).toContain('"Sou a Lia"');
-    expect(TRIAGE_AGENT_INSTRUCTIONS).toContain('"Em que posso te ajudar?"');
-    expect(TRIAGE_AGENT_INSTRUCTIONS).toContain('"Olá!"');
+  it("lista aberturas proibidas explícitas no modo simples (texto completo)", () => {
+    expect(TRIAGE_AGENT_SIMPLE_INSTRUCTIONS).toContain('"Sou a Lia"');
+    expect(TRIAGE_AGENT_SIMPLE_INSTRUCTIONS).toContain('"Em que posso te ajudar?"');
+    expect(TRIAGE_AGENT_SIMPLE_INSTRUCTIONS).toContain('"Olá!"');
   });
 
   it("orquestra handoff para especialista trabalhista e remove checklist detalhista", () => {
@@ -106,12 +109,42 @@ describe("triage trabalhista especialista", () => {
     );
   });
 
-  it("constrói agente com prefixo recomendado e tool MCP", () => {
-    const agent = buildTriageTrabalhistaAgent({ env, context });
-    expect(typeof agent.instructions).toBe("string");
-    const text = agent.instructions as string;
+  it("insere Instruções extras antes da regra de continuidade quando há texto", () => {
+    const withExtras = buildTriageTrabalhistaInstructionsWithExtras(
+      "sempre peça pro cliente seu nome completo",
+    );
+    expect(withExtras).toContain("## Instruções extras (definidas pelo escritório)");
+    expect(withExtras).toContain("sempre peça pro cliente seu nome completo");
+    const regraIdx = withExtras.indexOf("REGRA CRÍTICA: ENTRADA VIA HANDOFF (CONTINUIDADE)");
+    const extrasIdx = withExtras.indexOf("## Instruções extras");
+    expect(regraIdx).toBeGreaterThan(extrasIdx);
+  });
+
+  it("constrói agente com prefixo recomendado e tool MCP", async () => {
+    const agent = buildTriageTrabalhistaAgent({
+      env,
+      context,
+      fetchTriageSpecialistInstrucoes: async () => null,
+    });
+    expect(typeof agent.instructions).toBe("function");
+    const text = await (agent.instructions as (rc: {
+      context: AgentRunContext;
+    }) => Promise<string>)({ context });
     expect(text.startsWith(RECOMMENDED_PROMPT_PREFIX)).toBe(true);
     expect(text).toContain(TRIAGE_TRABALHISTA_AGENT_INSTRUCTIONS);
     expect(agent.tools.length).toBe(1);
+  });
+
+  it("hidrata Instruções extras quando o fetch retorna texto", async () => {
+    const agent = buildTriageTrabalhistaAgent({
+      env,
+      context,
+      fetchTriageSpecialistInstrucoes: async () => "  peça CPF  ",
+    });
+    const text = await (agent.instructions as (rc: {
+      context: AgentRunContext;
+    }) => Promise<string>)({ context });
+    expect(text).toContain("## Instruções extras (definidas pelo escritório)");
+    expect(text).toContain("peça CPF");
   });
 });
