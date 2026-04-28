@@ -388,6 +388,10 @@ export async function runAgents(
   const runInput = normalizeRunInputForOpenAiResponsesModel(runInputRaw);
 
   const tipoTriagem = await getChatbotTipoTriagem(input.organizationId, env);
+  logAgentLine(
+    input.conversaId,
+    `chatbot_ai_config.tipo_triagem="${tipoTriagem}" (org ${input.organizationId}); handoffs para especialista: ${tipoTriagem === "especialista" ? "sim" : "não"}.`,
+  );
   if (tipoTriagem === "sem_triagem") {
     throw new Error(
       "tipo_triagem=sem_triagem: execução de agentes não permitida para esta organização",

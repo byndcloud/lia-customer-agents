@@ -119,10 +119,11 @@ async function handleWebhook(
     return;
   }
 
-  if (
-    !body.data.key.fromMe &&
-    (await getChatbotTipoTriagem(organizationId, deps.env)) === "sem_triagem"
-  ) {
+  const tipoTriagem = await getChatbotTipoTriagem(organizationId, deps.env);
+  if (!body.data.key.fromMe && tipoTriagem === "sem_triagem") {
+    console.info(
+      `[webhook-evolution] organization_id=${organizationId}: mensagem de cliente ignorada (chatbot_ai_config.tipo_triagem="sem_triagem").`,
+    );
     res.status(200).json({
       message:
         "Message ignored — organization chatbot tipo_triagem is sem_triagem",

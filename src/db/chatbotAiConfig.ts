@@ -127,10 +127,16 @@ async function loadOrgAiConfigEntry(
   }
 
   if (!data) {
+    console.info(
+      `[chatbotAiConfig] organization_id=${organizationId}: sem linha em chatbot_ai_config — tipo_triagem efetivo="${DEFAULT_TIPO_TRIAGEM}" (default).`,
+    );
     return { personalization: null, tipoTriagem: DEFAULT_TIPO_TRIAGEM };
   }
 
   const tipoTriagem = parseTipoTriagem(data.tipo_triagem);
+  console.info(
+    `[chatbotAiConfig] organization_id=${organizationId}: tipo_triagem no banco=${JSON.stringify(data.tipo_triagem)} → resolvido="${tipoTriagem}".`,
+  );
 
   const tom = TOM_VALUES.find((v) => v === data.tom_voz);
   const vocab = VOCAB_VALUES.find((v) => v === data.vocabulario);

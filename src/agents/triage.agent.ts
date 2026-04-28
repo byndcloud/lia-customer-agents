@@ -47,7 +47,6 @@ export function buildTriageAgent(
   });
 
   const instructionsBody = buildTriageAgentInstructions(specialistHandoffs);
-
   return new Agent<AgentRunContext>({
     name: TRIAGE_AGENT_NAME,
     handoffDescription: specialistHandoffs
