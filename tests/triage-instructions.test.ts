@@ -10,6 +10,7 @@ import {
 import {
   TRIAGE_TRABALHISTA_AGENT_INSTRUCTIONS,
   buildTriageTrabalhistaInstructionsWithExtras,
+  formatTriageSpecialistInstrucoesForPrompt,
 } from "../src/agents/instructions/triage-trabalhista.instructions.js";
 import type { EnvConfig } from "../src/config/env.js";
 import type { AgentRunContext } from "../src/types.js";
@@ -118,6 +119,30 @@ describe("triage trabalhista especialista", () => {
     const regraIdx = withExtras.indexOf("REGRA CRÍTICA: ENTRADA VIA HANDOFF (CONTINUIDADE)");
     const extrasIdx = withExtras.indexOf("## Instruções extras");
     expect(regraIdx).toBeGreaterThan(extrasIdx);
+  });
+
+  it("formata JSONB de instruções como lista numerada por ordem de data", () => {
+    const formatted = formatTriageSpecialistInstrucoesForPrompt([
+      { data: "2026-04-29T15:13:59.007Z", texto: "Incluir o link ao perguntar o endereço." },
+      { data: "2026-04-29T14:39:07.220Z", texto: "Perguntar sempre o nome completo do cliente." },
+      { data: "2026-04-29T14:39:07.220Z", texto: "Perguntar sempre o endereço do cliente." },
+    ]);
+    expect(formatted).toBe(
+      [
+        "1 - Perguntar sempre o nome completo do cliente.",
+        "2 - Perguntar sempre o endereço do cliente.",
+        "3 - Incluir o link ao perguntar o endereço.",
+      ].join("\n"),
+    );
+    const withExtras = buildTriageTrabalhistaInstructionsWithExtras(formatted);
+    expect(withExtras).toContain("1 - Perguntar sempre o nome completo do cliente.");
+    expect(withExtras).toContain("3 - Incluir o link ao perguntar o endereço.");
+  });
+
+  it("aceita string JSON com array (como serializado) e texto legado sem JSON", () => {
+    const json = JSON.stringify([{ data: "2026-01-01T00:00:00.000Z", texto: "Só uma regra." }]);
+    expect(formatTriageSpecialistInstrucoesForPrompt(json)).toBe("1 - Só uma regra.");
+    expect(formatTriageSpecialistInstrucoesForPrompt("  texto puro antigo  ")).toBe("texto puro antigo");
   });
 
   it("constrói agente com prefixo recomendado e tool MCP", async () => {

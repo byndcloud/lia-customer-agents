@@ -342,9 +342,65 @@ CHECKLIST ANTES DE RESPONDER
 const TRIAGE_TRABALHISTA_INSTRUCOES_EXTRAS_ANCHOR =
   "\n\nREGRA CRÍTICA: ENTRADA VIA HANDOFF (CONTINUIDADE)\n";
 
+/** Entrada JSONB em `triage_specialist_agents_config.instrucoes` (histórico por item). */
+export interface TriageSpecialistInstrucaoItem {
+  readonly data?: string;
+  readonly texto?: string;
+}
+
+/**
+ * Converte o valor bruto da coluna `instrucoes` (texto legado ou JSONB com array de
+ * `{ data, texto }`) em bloco numerado para o prompt.
+ *
+ * - Array: ordena por `data` (ISO) ascendente; cada linha `n - texto`.
+ * - String que parece JSON array: faz parse e reprocessa; se parse falhar, usa o texto como legado.
+ * - Outra string não vazia: retorna trim (compatível com valores antigos só texto).
+ */
+export function formatTriageSpecialistInstrucoesForPrompt(raw: unknown): string | null {
+  if (raw === null || raw === undefined) return null;
+
+  if (typeof raw === "string") {
+    const t = raw.trim();
+    if (!t) return null;
+    if (t.startsWith("[")) {
+      try {
+        return formatTriageSpecialistInstrucoesForPrompt(JSON.parse(t) as unknown);
+      } catch {
+        return t;
+      }
+    }
+    return t;
+  }
+
+  if (!Array.isArray(raw)) return null;
+
+  type Row = { data: string; texto: string };
+  const rows: Row[] = [];
+  for (const el of raw) {
+    if (!el || typeof el !== "object") continue;
+    const o = el as Record<string, unknown>;
+    const texto = typeof o.texto === "string" ? o.texto.trim() : "";
+    if (!texto) continue;
+    const data = typeof o.data === "string" ? o.data : "";
+    rows.push({ data, texto });
+  }
+  if (rows.length === 0) return null;
+
+  rows.sort((a, b) => {
+    if (a.data && b.data) return a.data.localeCompare(b.data);
+    if (a.data) return -1;
+    if (b.data) return 1;
+    return 0;
+  });
+
+  return rows.map((r, i) => `${i + 1} - ${r.texto}`).join("\n");
+}
+
 /**
  * Injeta o texto vindo de `triage_specialist_agents_config.instrucoes` no meio
  * do prompt (após o bloco inicial, antes da regra de continuidade via handoff).
+ * O argumento deve já estar no formato legível (ex.: saída de
+ * {@link formatTriageSpecialistInstrucoesForPrompt}).
  */
 export function buildTriageTrabalhistaInstructionsWithExtras(
   instrucoesExtras: string | null | undefined,

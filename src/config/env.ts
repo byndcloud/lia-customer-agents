@@ -33,6 +33,17 @@ function readNumberEnv(name: string, fallback: number): number {
   return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
 }
 
+/** Primeira variável de ambiente em `names` com número finito > 0; senão `fallback`. */
+function readPositiveNumberFirst(names: readonly string[], fallback: number): number {
+  for (const name of names) {
+    const raw = readEnv(name);
+    if (!raw) continue;
+    const parsed = Number(raw);
+    if (Number.isFinite(parsed) && parsed > 0) return parsed;
+  }
+  return fallback;
+}
+
 export interface EnvConfig {
   /** Modelo OpenAI padrão. */
   readonly aiModel: string;
@@ -63,7 +74,11 @@ export interface EnvConfig {
    * Cloud Tasks chamar `POST /generate-ai-response`.
    */
   readonly selfPublicBaseUrl: string | undefined;
-  /** Atraso default da janela de agregação (segundos). */
+  /**
+   * Atraso da fila Cloud Tasks (segundos). Fonte: `CHATBOT_QUEUE_DELAY_SECONDS`
+   * ou, se ausente/inválida, `DEFAULT_QUEUE_DELAY_SECONDS` no ambiente; por fim
+   * {@link DEFAULT_QUEUE_DELAY_SECONDS} (constante exportada).
+   */
   readonly chatbotQueueDelaySeconds: number;
   /** Bucket de mídia do WhatsApp no Supabase Storage. */
   readonly whatsappStorageBucket: string;
@@ -78,7 +93,12 @@ export interface EnvConfig {
 const DEFAULT_MODEL = "gpt-5";
 /** Porta local padrão (evita 8080 e 3000). Em Cloud Run, `PORT` é definido pela plataforma. */
 const DEFAULT_PORT = 3333;
-const DEFAULT_QUEUE_DELAY_SECONDS = 4;
+/**
+ * Atraso padrão (segundos) do Cloud Tasks quando nenhuma variável de ambiente
+ * válida está definida. Exportado para uso em testes/docs; em runtime,
+ * prefira `CHATBOT_QUEUE_DELAY_SECONDS` ou `DEFAULT_QUEUE_DELAY_SECONDS` no ambiente.
+ */
+export const DEFAULT_QUEUE_DELAY_SECONDS = 4;
 const DEFAULT_FOLLOWUP_30MIN_SECONDS = 1800;
 const DEFAULT_FOLLOWUP_24H_SECONDS = 86400;
 const DEFAULT_STORAGE_BUCKET = "whatsapp-files";
@@ -111,8 +131,8 @@ export function loadEnv(): EnvConfig {
       readEnv("GOOGLE_CLOUD_TASKS_LOCATION") ?? DEFAULT_GCT_LOCATION,
     chatbotQueueName: readEnv("CHATBOT_QUEUE_NAME") ?? DEFAULT_QUEUE_NAME,
     selfPublicBaseUrl: readEnv("SELF_PUBLIC_BASE_URL"),
-    chatbotQueueDelaySeconds: readNumberEnv(
-      "CHATBOT_QUEUE_DELAY_SECONDS",
+    chatbotQueueDelaySeconds: readPositiveNumberFirst(
+      ["CHATBOT_QUEUE_DELAY_SECONDS", "DEFAULT_QUEUE_DELAY_SECONDS"],
       DEFAULT_QUEUE_DELAY_SECONDS,
     ),
     whatsappStorageBucket:

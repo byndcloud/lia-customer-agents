@@ -11,7 +11,9 @@ import { loadEnv, type EnvConfig } from "../config/env.js";
  *
  * Fluxo:
  *  1. `webhook-evolution` recebe a mensagem.
- *  2. Salva no banco e chama `enqueueChatbotMessage` com delay (default 4s).
+ *  2. Salva no banco e chama `enqueueChatbotMessage` com delay (env:
+ *     `CHATBOT_QUEUE_DELAY_SECONDS` ou `DEFAULT_QUEUE_DELAY_SECONDS`, senão
+ *     constante exportada `DEFAULT_QUEUE_DELAY_SECONDS` em `config/env.ts`).
  *  3. Cloud Tasks dispara `POST <SELF_PUBLIC_BASE_URL>/generate-ai-response`.
  *  4. A rota agrega tudo o que chegou na janela e responde via OpenAI.
  *
@@ -159,7 +161,8 @@ class QueueService {
 
   /**
    * Enfileira uma mensagem com delay (segundos). Se omitido, usa
-   * `CHATBOT_QUEUE_DELAY_SECONDS` (default 4s).
+   * `CHATBOT_QUEUE_DELAY_SECONDS` / `DEFAULT_QUEUE_DELAY_SECONDS` ou fallback
+   * em `config/env.ts` (`DEFAULT_QUEUE_DELAY_SECONDS`).
    */
   async enqueueChatbotMessage(
     payload: ChatbotQueuePayload,

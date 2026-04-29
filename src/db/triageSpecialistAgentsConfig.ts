@@ -1,8 +1,12 @@
-import { TRIAGE_TRABALHISTA_AGENT_NAME } from "../agents/instructions/triage-trabalhista.instructions.js";
+import {
+  TRIAGE_TRABALHISTA_AGENT_NAME,
+  formatTriageSpecialistInstrucoesForPrompt,
+} from "../agents/instructions/triage-trabalhista.instructions.js";
 import type { EnvConfig } from "../config/env.js";
 import { getSupabaseClient } from "./client.js";
 
 interface CacheEntry {
+  /** Texto já formatado para o prompt (JSONB array → lista numerada, ou legado). */
   value: string | null;
   timestamp: number;
 }
@@ -47,7 +51,10 @@ export async function organizationHasTriageSpecialistAgentsConfig(
 /**
  * Lê `instrucoes` em `triage_specialist_agents_config` para a org e o nome do
  * agente (ex.: `triage_trabalhista`). Retorna `null` se não houver linha,
- * erro de I/O ou texto só em branco.
+ * erro de I/O ou conteúdo vazio após formatação.
+ *
+ * A coluna é JSONB: array de `{ data, texto }` vira lista numerada para o prompt;
+ * string simples (legado) é repassada em trim.
  *
  * A tabela já existe no projeto (FK `organization_id` → `organizations`, etc.);
  * usamos `limit(1)` + `atualizado_em` desc para não depender de unique composto.
@@ -75,9 +82,7 @@ export async function getTriageSpecialistInstrucoes(
 
   const row = data?.[0];
   const raw = row?.instrucoes;
-  if (raw === null || raw === undefined) return null;
-  const t = String(raw).trim();
-  return t.length > 0 ? t : null;
+  return formatTriageSpecialistInstrucoesForPrompt(raw);
 }
 
 /**
