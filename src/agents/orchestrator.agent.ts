@@ -134,7 +134,8 @@ export interface BuildOrchestratorAgentParams {
   readonly context: AgentRunContext;
   /**
    * Quando `false`, a triagem central não expõe handoffs para especialistas
-   * (alinha a `chatbot_ai_config.tipo_triagem` = `simples`).
+   * (sem linhas em `triage_specialist_agents_config` ou não cliente com
+   * `whatsapp_numeros.triage_enabled` = false).
    */
   readonly triageSpecialistHandoffs?: boolean;
 }

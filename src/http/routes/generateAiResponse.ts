@@ -28,7 +28,6 @@ import {
   type ChatbotQueuePayload,
 } from "../../services/queueService.js";
 import { resolveWhatsAppInstance } from "../../services/whatsappInstanceResolver.js";
-import { getChatbotTipoTriagem } from "../../db/chatbotAiConfig.js";
 import { runAgents } from "../../runtime/run-agents.js";
 import type { AgentId, AgentInputItem } from "../../types.js";
 

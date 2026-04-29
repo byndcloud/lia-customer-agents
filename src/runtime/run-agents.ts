@@ -15,7 +15,8 @@ import { PROCESS_INFO_AGENT_NAME } from "../agents/instructions/process-info.ins
 import { TRIAGE_AGENT_NAME } from "../agents/instructions/triage.instructions.js";
 import { TRIAGE_TRABALHISTA_AGENT_NAME } from "../agents/instructions/triage-trabalhista.instructions.js";
 import { loadEnv, type EnvConfig } from "../config/env.js";
-import { getChatbotTipoTriagem } from "../db/chatbotAiConfig.js";
+import { getTriageEnabledForOrganization } from "../db/instances.js";
+import { organizationHasTriageSpecialistAgentsConfig } from "../db/triageSpecialistAgentsConfig.js";
 import {
   RunInputSchema,
   type AgentId,
@@ -387,14 +388,24 @@ export async function runAgents(
     : (input.userMessage as string);
   const runInput = normalizeRunInputForOpenAiResponsesModel(runInputRaw);
 
-  const tipoTriagem = await getChatbotTipoTriagem(input.organizationId, env);
+  const isClient = Boolean(input.clientId);
+  const [triageEnabled, hasSpecialistRows] = await Promise.all([
+    getTriageEnabledForOrganization(input.organizationId, env),
+    organizationHasTriageSpecialistAgentsConfig(input.organizationId, env),
+  ]);
+
+  const triageSpecialistHandoffs = isClient
+    ? hasSpecialistRows
+    : triageEnabled && hasSpecialistRows;
+
   logAgentLine(
     input.conversaId,
-    `chatbot_ai_config.tipo_triagem="${tipoTriagem}" (org ${input.organizationId}); handoffs para especialista: ${tipoTriagem === "especialista" ? "sim" : "não"}.`,
+    `triagem: cliente_vinculado=${isClient ? "sim" : "não"}; whatsapp_numeros.triage_enabled=${triageEnabled}; tem triage_specialist_agents_config=${hasSpecialistRows}; handoffs_especialista=${triageSpecialistHandoffs ? "sim" : "não"} (org ${input.organizationId}).`,
   );
-  if (tipoTriagem === "sem_triagem") {
+
+  if (!isClient && !triageEnabled) {
     throw new Error(
-      "tipo_triagem=sem_triagem: execução de agentes não permitida para esta organização",
+      "triage_enabled=false em whatsapp_numeros: execução de agentes não permitida para atendimento sem pessoa vinculada",
     );
   }
 
@@ -411,7 +422,7 @@ export async function runAgents(
   const orchestrator = buildOrchestratorAgent({
     env,
     context,
-    triageSpecialistHandoffs: tipoTriagem === "especialista",
+    triageSpecialistHandoffs,
   });
 
   console.log("");

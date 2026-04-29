@@ -6,13 +6,14 @@ export const TRIAGE_AGENT_NAME = "triage";
 export const TRIAGE_AGENT_HANDOFF_DESCRIPTION =
   "Faz triagem simples (fallback) e orquestra handoff para triagens especialistas por área quando o tema do cliente é identificado.";
 
-/** Quando `tipo_triagem` da org é `simples` (sem handoffs para especialistas). */
+/** Quando não há handoffs para triagens especialistas por área (config da org). */
 export const TRIAGE_AGENT_HANDOFF_DESCRIPTION_SIMPLES =
   "Faz triagem inicial no mesmo agente, sem transferência para triagens especialistas por área.";
 
 /**
  * Triagem central com handoff para triagem trabalhista quando aplicável
- * (`chatbot_ai_config.tipo_triagem` = `especialista`).
+ * (há linhas em `triage_specialist_agents_config` e, para não clientes,
+ * `whatsapp_numeros.triage_enabled` = true).
  */
 export const TRIAGE_AGENT_INSTRUCTIONS = `Você é Lia, assistente virtual responsável pela TRIAGEM SIMPLES/CENTRAL do escritório.
 
@@ -287,10 +288,10 @@ CHECKLIST ANTES DE RESPONDER
 
 
 /**
- * Triagem central sem handoff para outros agentes de triagem
- * (`chatbot_ai_config.tipo_triagem` = `simples`).
+ * Triagem central sem handoff para outros agentes de triagem (sem linhas em
+ * `triage_specialist_agents_config`, ou não cliente com triagem sem handoff).
  * Mantido como constante própria (não derivada por regex) para evoluir
- * independentemente do modo especialista.
+ * independentemente do modo com especialistas.
  */
 export const TRIAGE_AGENT_SIMPLE_INSTRUCTIONS = `Você é Lia, assistente virtual responsável pela TRIAGEM SIMPLES/CENTRAL do escritório.
 

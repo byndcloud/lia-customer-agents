@@ -20,7 +20,7 @@ export interface BuildTriageAgentParams {
   readonly context: AgentRunContext;
   /**
    * Quando `false`, não registra handoffs para triagens especialistas
-   * (`tipo_triagem` = `simples` na `chatbot_ai_config`).
+   * (política derivada de `triage_specialist_agents_config` e `triage_enabled`).
    */
   readonly specialistHandoffs?: boolean;
 }

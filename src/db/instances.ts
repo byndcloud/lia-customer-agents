@@ -61,3 +61,35 @@ export async function getActiveWhatsAppInstance(
 
   return data?.instance_name ?? null;
 }
+
+/**
+ * `triage_enabled` da instância WhatsApp ativa da organização.
+ *
+ * Usado com `clientId` em `runAgents` para decidir handoffs a especialistas
+ * e para bloquear execução de IA a **não clientes** quando a triagem está
+ * desligada no número (`whatsapp_numeros`).
+ *
+ * Retorna `false` se não houver instância ativa ou em erro de leitura.
+ */
+export async function getTriageEnabledForOrganization(
+  organizationId: string,
+  env?: EnvConfig,
+): Promise<boolean> {
+  const supabase = getSupabaseClient(env);
+
+  const { data, error } = await supabase
+    .from("whatsapp_numeros")
+    .select("triage_enabled")
+    .eq("organization_id", organizationId)
+    .eq("is_active", true)
+    .maybeSingle<{ triage_enabled: boolean | null }>();
+
+  if (error) {
+    console.warn(
+      `[instances] getTriageEnabledForOrganization org=${organizationId}: ${error.message}`,
+    );
+    return false;
+  }
+
+  return data?.triage_enabled ?? false;
+}

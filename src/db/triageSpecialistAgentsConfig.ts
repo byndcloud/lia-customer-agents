@@ -1,3 +1,4 @@
+import { TRIAGE_TRABALHISTA_AGENT_NAME } from "../agents/instructions/triage-trabalhista.instructions.js";
 import type { EnvConfig } from "../config/env.js";
 import { getSupabaseClient } from "./client.js";
 
@@ -11,6 +12,36 @@ const TTL_MS = 5 * 60 * 1000;
 
 function cacheKey(organizationId: string, nome: string): string {
   return `${organizationId}::${nome}`;
+}
+
+/**
+ * Indica se existe linha em `triage_specialist_agents_config` para a org com
+ * `nome` = {@link TRIAGE_TRABALHISTA_AGENT_NAME} (único especialista de triagem
+ * com handoff neste serviço).
+ *
+ * Usado com `triage_enabled` e vínculo de cliente para decidir se a triagem
+ * central expõe handoff para o agente trabalhista.
+ */
+export async function organizationHasTriageSpecialistAgentsConfig(
+  organizationId: string,
+  env?: EnvConfig,
+): Promise<boolean> {
+  const supabase = getSupabaseClient(env);
+  const { data, error } = await supabase
+    .from("triage_specialist_agents_config")
+    .select("organization_id")
+    .eq("organization_id", organizationId)
+    .eq("nome", TRIAGE_TRABALHISTA_AGENT_NAME)
+    .limit(1);
+
+  if (error) {
+    console.warn(
+      `[triageSpecialistAgentsConfig] organizationHasTriageSpecialistAgentsConfig(${organizationId}): ${error.message}`,
+    );
+    return false;
+  }
+
+  return (data?.length ?? 0) > 0;
 }
 
 /**

@@ -10,7 +10,6 @@ import {
   resolveAtendimentoIdForPersistedMessage,
   transicionarParaAtendimentoWhatsApp,
 } from "../../db/atendimentos.js";
-import { getChatbotTipoTriagem } from "../../db/chatbotAiConfig.js";
 import { getOrganizationByInstanceName } from "../../db/instances.js";
 import {
   saveChatbotMessage,
@@ -154,19 +153,6 @@ async function handleWebhook(
     return;
   }
 
-  const tipoTriagem = await getChatbotTipoTriagem(organizationId, deps.env);
-  if (!body.data.key.fromMe && tipoTriagem === "sem_triagem") {
-    console.info(
-      `[webhook-evolution] organization_id=${organizationId}: mensagem de cliente ignorada (chatbot_ai_config.tipo_triagem="sem_triagem").`,
-    );
-    res.status(200).json({
-      message:
-        "Message ignored — organization chatbot tipo_triagem is sem_triagem",
-      organizationId,
-    });
-    return;
-  }
-
   let conversa: WhatsappConversa | null = await getConversaByPhoneNumber(
     phoneNumber,
     organizationId,
@@ -204,6 +190,23 @@ async function handleWebhook(
       conversa.status = restart.newStatus;
       conversa.chatbot_ativo = restart.chatbotAtivo ?? conversa.chatbot_ativo;
     }
+  }
+
+  const triageEnabledOnInstance = activeInstance.triage_enabled ?? false;
+  if (
+    !body.data.key.fromMe &&
+    !conversa.pessoa_id &&
+    !triageEnabledOnInstance
+  ) {
+    console.info(
+      `[webhook-evolution] organization_id=${organizationId}: mensagem ignorada (não cliente e whatsapp_numeros.triage_enabled=false).`,
+    );
+    res.status(200).json({
+      message:
+        "Message ignored — triage disabled for non-client on this WhatsApp instance",
+      organizationId,
+    });
+    return;
   }
 
   const state = await processMessage(
