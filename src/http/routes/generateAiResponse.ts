@@ -4,7 +4,11 @@ import {
   type Request,
   type Response,
 } from "express";
-import type { EnvConfig } from "../../config/env.js";
+import {
+  CHATBOT_QUEUE_REQUEUE_BUFFER_SECONDS,
+  chatbotQueueClaimWindowSeconds,
+  type EnvConfig,
+} from "../../config/env.js";
 import { getSupabaseClient } from "../../db/client.js";
 import {
   clampAtendimentoIniciadoEmIfEarlier,
@@ -30,9 +34,6 @@ import {
 import { resolveWhatsAppInstance } from "../../services/whatsappInstanceResolver.js";
 import { runAgents } from "../../runtime/run-agents.js";
 import type { AgentId, AgentInputItem } from "../../types.js";
-
-/** Janela de agregação em segundos (mantém o mesmo valor da edge function). */
-const CHATBOT_AGGREGATION_WINDOW_SEC = 20;
 
 /** Limite de re-enfileiramentos quando a janela ainda está aberta. */
 const CHATBOT_QUEUE_SELF_RETRY_MAX = 12;
@@ -319,9 +320,16 @@ async function handleGenerate(
       env,
     );
 
+    const claimWindowSeconds = chatbotQueueClaimWindowSeconds(
+      env.chatbotQueueDelaySeconds,
+    );
+
     const { data: claimedMessages, error: claimError } = await supabase.rpc(
       "claim_pending_chatbot_messages",
-      { _conversa_id: conversaId, _window_seconds: 20 },
+      {
+        _conversa_id: conversaId,
+        _window_seconds: claimWindowSeconds,
+      },
     );
 
     if (claimError) {
@@ -338,6 +346,8 @@ async function handleGenerate(
       conversaId,
       claimedCount: pendingMessages.length,
       claimedMessageIds: pendingMessages.map((m) => m.id),
+      chatbotQueueDelaySeconds: env.chatbotQueueDelaySeconds,
+      claimWindowSeconds,
     });
 
     if (pendingMessages.length === 0) {
@@ -584,7 +594,8 @@ async function handleGenerate(
 /**
  * Trata o caso em que `claim_pending_chatbot_messages` retorna vazio. Pode
  * acontecer quando:
- *  - Cloud Tasks disparou cedo demais (janela de agregação ainda aberta).
+ *  - Cloud Tasks disparou cedo demais (janela do claim ainda aberta — alinhada
+ *    a `chatbotQueueClaimWindowSeconds(env.chatbotQueueDelaySeconds)`).
  *  - As mensagens já foram processadas por outro batch (idempotência).
  */
 async function handleEmptyClaim(params: {
@@ -599,11 +610,16 @@ async function handleEmptyClaim(params: {
   env: EnvConfig;
 }): Promise<Record<string, unknown>> {
   const supabase = getSupabaseClient(params.env);
+  const claimWindowSeconds = chatbotQueueClaimWindowSeconds(
+    params.env.chatbotQueueDelaySeconds,
+  );
 
   logGenerateAi("generate_ai_handle_empty_claim", {
     conversaId: params.conversaId,
     queueRetryCount: params.queueRetryCount,
     organizacaoId: params.organizacaoId ?? null,
+    chatbotQueueDelaySeconds: params.env.chatbotQueueDelaySeconds,
+    claimWindowSeconds,
   });
 
   const { data: latestPending, error: peekError } = await supabase
@@ -628,7 +644,7 @@ async function handleEmptyClaim(params: {
 
   const podeReenfileirar =
     ageSec !== null &&
-    ageSec < CHATBOT_AGGREGATION_WINDOW_SEC &&
+    ageSec < claimWindowSeconds &&
     params.queueRetryCount < CHATBOT_QUEUE_SELF_RETRY_MAX &&
     params.organizacaoId &&
     params.instancia &&
@@ -637,7 +653,8 @@ async function handleEmptyClaim(params: {
   if (podeReenfileirar) {
     const waitSec = Math.max(
       1,
-      Math.ceil(CHATBOT_AGGREGATION_WINDOW_SEC - (ageSec ?? 0)) + 2,
+      Math.ceil(claimWindowSeconds - (ageSec ?? 0)) +
+        CHATBOT_QUEUE_REQUEUE_BUFFER_SECONDS,
     );
 
     await queueService.enqueueChatbotMessage(
@@ -674,7 +691,7 @@ async function handleEmptyClaim(params: {
 
   if (
     ageSec !== null &&
-    ageSec < CHATBOT_AGGREGATION_WINDOW_SEC &&
+    ageSec < claimWindowSeconds &&
     params.queueRetryCount >= CHATBOT_QUEUE_SELF_RETRY_MAX
   ) {
     console.error(

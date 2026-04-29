@@ -77,7 +77,7 @@ export interface EnvConfig {
   /**
    * Atraso da fila Cloud Tasks (segundos). Fonte: `CHATBOT_QUEUE_DELAY_SECONDS`
    * ou, se ausente/inválida, `DEFAULT_QUEUE_DELAY_SECONDS` no ambiente; por fim
-   * {@link DEFAULT_QUEUE_DELAY_SECONDS} (constante exportada).
+   * {@link DEFAULT_QUEUE_DELAY_SECONDS} (export — hoje 20s se nada estiver definido).
    */
   readonly chatbotQueueDelaySeconds: number;
   /** Bucket de mídia do WhatsApp no Supabase Storage. */
@@ -94,11 +94,26 @@ const DEFAULT_MODEL = "gpt-5";
 /** Porta local padrão (evita 8080 e 3000). Em Cloud Run, `PORT` é definido pela plataforma. */
 const DEFAULT_PORT = 3333;
 /**
- * Atraso padrão (segundos) do Cloud Tasks quando nenhuma variável de ambiente
- * válida está definida. Exportado para uso em testes/docs; em runtime,
- * prefira `CHATBOT_QUEUE_DELAY_SECONDS` ou `DEFAULT_QUEUE_DELAY_SECONDS` no ambiente.
+ * Atraso padrão (segundos) do Cloud Tasks quando `CHATBOT_QUEUE_DELAY_SECONDS`
+ * e `DEFAULT_QUEUE_DELAY_SECONDS` não estão definidos ou são inválidos no ambiente.
  */
-export const DEFAULT_QUEUE_DELAY_SECONDS = 4;
+export const DEFAULT_QUEUE_DELAY_SECONDS = 20;
+
+/**
+ * Folga (s) entre o delay da fila e o `_window_seconds` do RPC
+ * `claim_pending_chatbot_messages` — evita claim vazio quando o primeiro
+ * disparo coincide com o limiar da janela.
+ */
+export const CHATBOT_QUEUE_CLAIM_WINDOW_SLACK_SECONDS = 2;
+
+/** Buffer (s) somado ao re-enfileiramento após claim vazio dentro da janela. */
+export const CHATBOT_QUEUE_REQUEUE_BUFFER_SECONDS = 2;
+
+/** `_window_seconds` do claim: `max(1, delayDaFila - slack)`. */
+export function chatbotQueueClaimWindowSeconds(delaySeconds: number): number {
+  const d = Math.floor(delaySeconds);
+  return Math.max(1, d - CHATBOT_QUEUE_CLAIM_WINDOW_SLACK_SECONDS);
+}
 const DEFAULT_FOLLOWUP_30MIN_SECONDS = 1800;
 const DEFAULT_FOLLOWUP_24H_SECONDS = 86400;
 const DEFAULT_STORAGE_BUCKET = "whatsapp-files";
