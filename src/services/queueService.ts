@@ -7,7 +7,7 @@ import { Buffer } from "node:buffer";
 import { loadEnv, type EnvConfig } from "../config/env.js";
 
 /**
- * Integração com Google Cloud Tasks para a janela de agregação de mensagens.
+ * Integração com Google Cloud Tasks (atraso antes de processar com IA).
  *
  * Fluxo:
  *  1. `webhook-evolution` recebe a mensagem.
@@ -15,7 +15,7 @@ import { loadEnv, type EnvConfig } from "../config/env.js";
  *     `CHATBOT_QUEUE_DELAY_SECONDS` ou `DEFAULT_QUEUE_DELAY_SECONDS`, senão
  *     constante exportada `DEFAULT_QUEUE_DELAY_SECONDS` em `config/env.ts`).
  *  3. Cloud Tasks dispara `POST <SELF_PUBLIC_BASE_URL>/generate-ai-response`.
- *  4. A rota agrega tudo o que chegou na janela e responde via OpenAI.
+ *  4. A rota valida obsolescência da task e monta o histórico do atendimento.
  *
  * O target é `lia-customer-agents` (Cloud Run) — não mais a edge function.
  */
@@ -35,8 +35,6 @@ export interface ChatbotQueuePayload {
   triggerMensagemId?: string | undefined;
   triggerMensagemCreatedAt?: string | undefined;
   isAutoResponse?: boolean | undefined;
-  /** Incrementado pela rota quando o lote ainda está aberto e re-enfileira. */
-  _queueRetryCount?: number | undefined;
   audioData?:
     | {
         storageUrl: string;

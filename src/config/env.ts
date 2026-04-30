@@ -100,16 +100,16 @@ const DEFAULT_PORT = 3333;
 export const DEFAULT_QUEUE_DELAY_SECONDS = 20;
 
 /**
- * Folga (s) entre o delay da fila e o `_window_seconds` do RPC
- * `claim_pending_chatbot_messages` — evita claim vazio quando o primeiro
- * disparo coincide com o limiar da janela.
+ * Constantes legadas usadas em testes / export público; o fluxo atual de
+ * `/generate-ai-response` não usa mais RPC de claim nem re-enfileiramento
+ * por janela vazia.
  */
 export const CHATBOT_QUEUE_CLAIM_WINDOW_SLACK_SECONDS = 2;
 
-/** Buffer (s) somado ao re-enfileiramento após claim vazio dentro da janela. */
+/** Legado (re-enfileiramento por claim vazio removido). */
 export const CHATBOT_QUEUE_REQUEUE_BUFFER_SECONDS = 2;
 
-/** `_window_seconds` do claim: `max(1, delayDaFila - slack)`. */
+/** Legado: `max(1, delayDaFila - slack)` — mantido para compatibilidade de API. */
 export function chatbotQueueClaimWindowSeconds(delaySeconds: number): number {
   const d = Math.floor(delaySeconds);
   return Math.max(1, d - CHATBOT_QUEUE_CLAIM_WINDOW_SLACK_SECONDS);

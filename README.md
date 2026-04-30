@@ -18,7 +18,8 @@ Evolution API --webhook--> POST /webhook-evolution  (Cloud Run)
                                             v
                             POST /generate-ai-response (Cloud Run)
                                 |
-                                +--> RPC claim_pending_chatbot_messages
+                                +--> ignora task se houver msg cliente mais nova
+                                +--> histórico do atendimento em whatsapp_mensagens
                                 +--> transcreve áudios via Whisper
                                 +--> runAgents() -> OrchestratorAgent
                                                        |
@@ -69,7 +70,7 @@ npm install
 | `GET /health` | Cloud Run probe | Liveness. Retorna `{ "status": "ok" }`. |
 | `POST /run` | Uso interno / testes | Executa os agentes diretamente para uma `RunInput`. |
 | `POST /webhook-evolution` | Evolution API | Recebe mensagens/eventos do WhatsApp, persiste, sobe mídia, enfileira no Cloud Tasks. |
-| `POST /generate-ai-response` | Cloud Tasks | Faz claim do batch agregado, transcreve áudios e chama `runAgents()`. |
+| `POST /generate-ai-response` | Cloud Tasks | Se a task não estiver obsoleta, monta o histórico do atendimento, transcreve áudios e chama `runAgents()`. |
 | `POST /deliver-response` | Frontend / atendente | Envia uma mensagem (texto/áudio/mídia) via Evolution e persiste em `whatsapp_mensagens`. |
 | `POST /followup-30min` | `pg_cron` | Gera mensagem de "ainda precisa de ajuda?" para conversas ~30 min inativas. |
 | `POST /followup-24h` | `pg_cron` | Encerra conversas inativas há 24h com mensagem de despedida. |
@@ -148,7 +149,7 @@ Códigos de erro:
 | `EVOLUTION_API_URL` | **sim** | URL base da Evolution (sem barra final). |
 | `EVOLUTION_API_KEY` | **sim** | API key da Evolution (header `apikey`). |
 
-### Cloud Tasks (agregação de mensagens, delay via env)
+### Cloud Tasks (delay antes de `/generate-ai-response`, via env)
 
 | Variável | Obrigatória | Descrição |
 | --- | --- | --- |
@@ -156,7 +157,7 @@ Códigos de erro:
 | `SELF_PUBLIC_BASE_URL` | **sim** | URL pública deste serviço (Cloud Run). Ex.: `https://lia-agents-XXXX-uc.a.run.app`. Usada como `targetUrl` da task. |
 | `GOOGLE_CLOUD_TASKS_LOCATION` | não | Default: `us-central1`. |
 | `CHATBOT_QUEUE_NAME` | não | Default: `lia`. |
-| `CHATBOT_QUEUE_DELAY_SECONDS` | não | Atraso da task (s). Se ausente/inválido, tenta `DEFAULT_QUEUE_DELAY_SECONDS` no ambiente; senão **20** (`DEFAULT_QUEUE_DELAY_SECONDS` exportado em `env.ts`). O RPC `claim_pending_chatbot_messages` usa `_window_seconds = max(1, delay - 2)` (ver `chatbotQueueClaimWindowSeconds`). |
+| `CHATBOT_QUEUE_DELAY_SECONDS` | não | Atraso da task (s) até o POST em `/generate-ai-response`. Se ausente/inválido, tenta `DEFAULT_QUEUE_DELAY_SECONDS` no ambiente; senão **20** (`DEFAULT_QUEUE_DELAY_SECONDS` em `env.ts`). |
 | `DEFAULT_QUEUE_DELAY_SECONDS` | não | Alias de `CHATBOT_QUEUE_DELAY_SECONDS` (lida se a primeira não estiver definida ou for inválida). |
 
 ### Follow-ups

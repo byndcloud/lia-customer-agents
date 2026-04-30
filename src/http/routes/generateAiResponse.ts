@@ -4,11 +4,7 @@ import {
   type Request,
   type Response,
 } from "express";
-import {
-  CHATBOT_QUEUE_REQUEUE_BUFFER_SECONDS,
-  chatbotQueueClaimWindowSeconds,
-  type EnvConfig,
-} from "../../config/env.js";
+import { type EnvConfig } from "../../config/env.js";
 import { getSupabaseClient } from "../../db/client.js";
 import {
   clampAtendimentoIniciadoEmIfEarlier,
@@ -18,9 +14,7 @@ import {
 import { updateConversationStatus } from "../../db/conversations.js";
 import {
   getMensagensByAtendimentoId,
-  getWhatsappMensagensByIds,
   hasClienteMensagemStrictlyAfter,
-  mergeWhatsappMensagensChronological,
   saveChatbotMessage,
   type WhatsappMensagem,
 } from "../../db/messages.js";
@@ -28,16 +22,9 @@ import { insertWhatsappConversationResponse } from "../../db/responses.js";
 import { transcribeAudioFromStorage } from "../../services/audioTranscription.js";
 import { shouldInterceptMessage } from "../../services/conversationFlowInterceptor.js";
 import { sendEvolutionMessage } from "../../services/evolutionApi.js";
-import {
-  queueService,
-  type ChatbotQueuePayload,
-} from "../../services/queueService.js";
 import { resolveWhatsAppInstance } from "../../services/whatsappInstanceResolver.js";
 import { runAgents } from "../../runtime/run-agents.js";
 import type { AgentId, AgentInputItem } from "../../types.js";
-
-/** Limite de re-enfileiramentos quando a janela ainda está aberta. */
-const CHATBOT_QUEUE_SELF_RETRY_MAX = 12;
 
 /** Rótulos para a mensagem de sistema do agente responsável no atendimento. */
 const AGENT_SYSTEM_LABEL: Record<AgentId, string> = {
@@ -56,76 +43,17 @@ function buildResponsibleAgentSystemMessage(agente: AgentId): AgentInputItem {
   };
 }
 
-/** Menor `created_at` válido entre as mensagens em claim (batch atual). */
-function earliestCreatedAtIsoInBatch(
-  batch: ReadonlyArray<ClaimedPendingMessage>,
+/** Menor `created_at` válido entre linhas de `whatsapp_mensagens`. */
+function earliestCreatedAtInRows(
+  rows: ReadonlyArray<WhatsappMensagem>,
 ): string | null {
   let minMs = Infinity;
-  for (const m of batch) {
+  for (const m of rows) {
     if (!m.created_at) continue;
     const t = new Date(m.created_at).getTime();
     if (!Number.isNaN(t) && t < minMs) minMs = t;
   }
   return minMs === Infinity ? null : new Date(minMs).toISOString();
-}
-
-/**
- * Primeiro run de um **atendimento novo**: não carrega histórico do banco;
- * envia só a mensagem de sistema do agente + o lote em claim (mensagens
- * recém-chegadas / agregadas neste processamento).
- */
-async function buildAgentInputsNewAtendimentoPendingOnly(params: {
-  pendingMessages: ClaimedPendingMessage[];
-  agenteResponsavel: AgentId;
-  env: EnvConfig;
-}): Promise<AgentInputItem[]> {
-  const items: AgentInputItem[] = [
-    buildResponsibleAgentSystemMessage(params.agenteResponsavel),
-  ];
-
-  for (const pending of params.pendingMessages) {
-    const messageType = pending.tipo_mensagem ?? "texto";
-
-    if (messageType === "audio" && pending.anexo_url) {
-      const t = await transcribeAudioFromStorage(
-        pending.anexo_url,
-        "audio/ogg",
-        params.env,
-      );
-      const content = t.success && t.transcription
-        ? t.transcription.trim()
-        : "[áudio sem transcrição]";
-      if (content) {
-        items.push({
-          role: "user",
-          content,
-          type: "message",
-        });
-      }
-      continue;
-    }
-
-    if (messageType === "texto" && pending.conteudo?.trim()) {
-      items.push({
-        role: "user",
-        content: pending.conteudo,
-        type: "message",
-      });
-      continue;
-    }
-
-    if (pending.anexo_url && messageType !== "texto") {
-      items.push(
-        buildUserInputFromMedia({
-          tipoMensagem: messageType,
-          anexoUrl: pending.anexo_url,
-          caption: pending.conteudo,
-        }),
-      );
-    }
-  }
-
-  return items;
 }
 
 /**
@@ -143,14 +71,6 @@ function logGenerateAi(
   } else {
     console.log(line);
   }
-}
-
-interface ClaimedPendingMessage {
-  id: string;
-  conteudo: string;
-  tipo_mensagem: string | null;
-  anexo_url: string | null;
-  created_at: string;
 }
 
 function buildUserInputFromMedia(params: {
@@ -193,8 +113,6 @@ interface GenerateAiRequestBody {
   /** Mensagem do cliente que originou a task (webhook → Cloud Tasks). */
   triggerMensagemId?: string;
   triggerMensagemCreatedAt?: string;
-  /** Definido ao re-enfileirar quando a janela de agregação ainda está aberta. */
-  _queueRetryCount?: number;
 }
 
 export interface GenerateAiResponseDeps {
@@ -202,10 +120,9 @@ export interface GenerateAiResponseDeps {
 }
 
 /**
- * Cria o router que processa o batch agregado de mensagens e gera uma
- * resposta com os agentes OpenAI internos. É chamado pelo Cloud Tasks (com
- * delay) e não recebe a mensagem em si — apenas os identificadores
- * necessários para hidratar o contexto e claim do batch.
+ * Cria o router que gera resposta com os agentes. Chamado pelo Cloud Tasks;
+ * ignora a invocação se já houver mensagem de cliente mais nova que a da task,
+ * senão carrega todo o histórico de `whatsapp_mensagens` do atendimento ativo.
  */
 export function buildGenerateAiResponseRouter(
   deps: GenerateAiResponseDeps,
@@ -239,13 +156,7 @@ async function handleGenerate(
     audioData,
     triggerMensagemId,
     triggerMensagemCreatedAt,
-    _queueRetryCount: rawQueueRetry,
   } = body;
-
-  const queueRetryCount =
-    typeof rawQueueRetry === "number" && rawQueueRetry >= 0
-      ? Math.floor(rawQueueRetry)
-      : 0;
 
   if (!conversaId) {
     res.status(400).json({ error: "conversaId é obrigatório" });
@@ -260,7 +171,6 @@ async function handleGenerate(
         typeof numeroWhatsapp === "string" && numeroWhatsapp.trim().length > 0,
       ),
       instancia: instancia ?? null,
-      queueRetryCount,
       hasAudioPayload: Boolean(audioData),
     });
 
@@ -355,66 +265,38 @@ async function handleGenerate(
       env,
     );
 
-    const claimWindowSeconds = chatbotQueueClaimWindowSeconds(
-      env.chatbotQueueDelaySeconds,
+    const atendimentoMensagens = await getMensagensByAtendimentoId(
+      activeService.atendimentoId,
+      env,
     );
 
-    const { data: claimedMessages, error: claimError } = await supabase.rpc(
-      "claim_pending_chatbot_messages",
-      {
-        _conversa_id: conversaId,
-        _window_seconds: claimWindowSeconds,
-      },
-    );
-
-    if (claimError) {
-      console.error("❌ Erro ao fazer claim das mensagens pendentes:", claimError);
-      res
-        .status(500)
-        .json({ error: "Erro ao preparar mensagens para processamento" });
-      return;
-    }
-
-    const pendingMessages = (claimedMessages ?? []) as ClaimedPendingMessage[];
-
-    logGenerateAi("generate_ai_claim", {
+    logGenerateAi("generate_ai_atendimento_messages", {
       conversaId,
-      claimedCount: pendingMessages.length,
-      claimedMessageIds: pendingMessages.map((m) => m.id),
-      chatbotQueueDelaySeconds: env.chatbotQueueDelaySeconds,
-      claimWindowSeconds,
+      atendimentoId: activeService.atendimentoId,
+      messageCount: atendimentoMensagens.length,
+      messageIds: atendimentoMensagens.map((m) => m.id),
     });
 
-    if (pendingMessages.length === 0) {
-      logGenerateAi("generate_ai_empty_claim_batch", {
+    if (atendimentoMensagens.length === 0) {
+      logGenerateAi("generate_ai_skipped", {
         conversaId,
-        queueRetryCount,
+        reason: "no_messages_for_atendimento",
+        atendimentoId: activeService.atendimentoId,
       });
-
-      const handled = await handleEmptyClaim({
-        conversaId,
-        organizacaoId,
-        instancia,
-        numeroWhatsapp,
-        clienteId,
-        mensagem,
-        audioData,
-        triggerMensagemId,
-        triggerMensagemCreatedAt,
-        queueRetryCount,
-        env,
+      res.status(200).json({
+        message: "Nenhuma mensagem vinculada a este atendimento",
+        status: "skipped",
+        reason: "no_messages_for_atendimento",
       });
-
-      res.status(200).json(handled);
       return;
     }
 
     let serviceAtendimento = activeService;
-    const earliestClaimIso = earliestCreatedAtIsoInBatch(pendingMessages);
-    if (earliestClaimIso) {
+    const earliestRowIso = earliestCreatedAtInRows(atendimentoMensagens);
+    if (earliestRowIso) {
       const patchedIniciado = await clampAtendimentoIniciadoEmIfEarlier(
         serviceAtendimento.atendimentoId,
-        earliestClaimIso,
+        earliestRowIso,
         env,
       );
       if (patchedIniciado) {
@@ -426,34 +308,22 @@ async function handleGenerate(
           conversaId,
           atendimentoId: serviceAtendimento.atendimentoId,
           iniciadoEm: patchedIniciado,
-          earliestFromClaimBatch: earliestClaimIso,
+          earliestFromAtendimentoRows: earliestRowIso,
         });
       }
     }
 
-    let inputs: AgentInputItem[];
-    if (serviceAtendimento.isNew) {
-      inputs = await buildAgentInputsNewAtendimentoPendingOnly({
-        pendingMessages,
-        agenteResponsavel: serviceAtendimento.agenteResponsavel,
-        env,
-      });
-    } else {
-      inputs = await buildAgentInputsFromAtendimentoWindow({
-        atendimentoId: serviceAtendimento.atendimentoId,
-        agenteResponsavel: serviceAtendimento.agenteResponsavel,
-        ensureMessageIds: pendingMessages.map((m) => m.id),
-        env,
-      });
-    }
+    const inputs = await buildAgentInputsFromAtendimentoWindow({
+      atendimentoId: serviceAtendimento.atendimentoId,
+      agenteResponsavel: serviceAtendimento.agenteResponsavel,
+      env,
+    });
 
     logGenerateAi("generate_ai_input_scope", {
       conversaId,
       isNewAtendimento: serviceAtendimento.isNew,
-      inputMode: serviceAtendimento.isNew
-        ? "pending_batch_only"
-        : "full_atendimento_history",
-      pendingCount: pendingMessages.length,
+      inputMode: "full_atendimento_history",
+      atendimentoMessageCount: atendimentoMensagens.length,
       inputsCount: inputs.length,
     });
 
@@ -462,13 +332,13 @@ async function handleGenerate(
       logGenerateAi("generate_ai_skipped", {
         conversaId,
         reason: "no_ai_eligible_messages",
-        claimedCount: pendingMessages.length,
+        atendimentoMessageCount: atendimentoMensagens.length,
       });
       res.status(200).json({
         message: "Lote sem mensagens elegíveis para IA",
         status: "skipped",
         reason: "no_ai_eligible_messages",
-        data: { claimed_count: pendingMessages.length },
+        data: { atendimento_messages_count: atendimentoMensagens.length },
       });
       return;
     }
@@ -605,8 +475,8 @@ async function handleGenerate(
         mensagem_id: mensagemData.id,
         response_id: responseId,
         tokens_used: tokensUsed,
-        is_new_atendimento: activeService.isNew,
-        claimed_messages_count: pendingMessages.length,
+        is_new_atendimento: serviceAtendimento.isNew,
+        atendimento_messages_count: atendimentoMensagens.length,
         aggregated_messages_count: inputs.length,
         agent_used: result.agentUsed,
       },
@@ -626,137 +496,6 @@ async function handleGenerate(
     }
     next(error);
   }
-}
-
-/**
- * Trata o caso em que `claim_pending_chatbot_messages` retorna vazio. Pode
- * acontecer quando:
- *  - Cloud Tasks disparou cedo demais (janela do claim ainda aberta — alinhada
- *    a `chatbotQueueClaimWindowSeconds(env.chatbotQueueDelaySeconds)`).
- *  - As mensagens já foram processadas por outro batch (idempotência).
- */
-async function handleEmptyClaim(params: {
-  conversaId: string;
-  organizacaoId?: string | undefined;
-  instancia?: string | undefined;
-  numeroWhatsapp?: string | undefined;
-  clienteId?: string | undefined;
-  mensagem?: string | undefined;
-  audioData?: ChatbotQueuePayload["audioData"];
-  triggerMensagemId?: string | undefined;
-  triggerMensagemCreatedAt?: string | undefined;
-  queueRetryCount: number;
-  env: EnvConfig;
-}): Promise<Record<string, unknown>> {
-  const supabase = getSupabaseClient(params.env);
-  const claimWindowSeconds = chatbotQueueClaimWindowSeconds(
-    params.env.chatbotQueueDelaySeconds,
-  );
-
-  logGenerateAi("generate_ai_handle_empty_claim", {
-    conversaId: params.conversaId,
-    queueRetryCount: params.queueRetryCount,
-    organizacaoId: params.organizacaoId ?? null,
-    chatbotQueueDelaySeconds: params.env.chatbotQueueDelaySeconds,
-    claimWindowSeconds,
-  });
-
-  const { data: latestPending, error: peekError } = await supabase
-    .from("whatsapp_mensagens")
-    .select("id, created_at")
-    .eq("conversa_id", params.conversaId)
-    .eq("remetente", "cliente")
-    .is("processed_at", null)
-    .order("created_at", { ascending: false })
-    .limit(1)
-    .maybeSingle<{ id: string; created_at: string }>();
-
-  if (peekError) {
-    console.error("❌ Peek mensagens pendentes:", peekError);
-  }
-
-  let ageSec: number | null = null;
-  if (latestPending?.created_at) {
-    ageSec =
-      (Date.now() - new Date(latestPending.created_at).getTime()) / 1000;
-  }
-
-  const podeReenfileirar =
-    ageSec !== null &&
-    ageSec < claimWindowSeconds &&
-    params.queueRetryCount < CHATBOT_QUEUE_SELF_RETRY_MAX &&
-    params.organizacaoId &&
-    params.instancia &&
-    params.numeroWhatsapp;
-
-  if (podeReenfileirar) {
-    const waitSec = Math.max(
-      1,
-      Math.ceil(claimWindowSeconds - (ageSec ?? 0)) +
-        CHATBOT_QUEUE_REQUEUE_BUFFER_SECONDS,
-    );
-
-    await queueService.enqueueChatbotMessage(
-      {
-        conversaId: params.conversaId,
-        mensagem: params.mensagem ?? "",
-        instancia: params.instancia!,
-        numeroWhatsapp: params.numeroWhatsapp!,
-        clienteId: params.clienteId ?? "",
-        organizacaoId: params.organizacaoId!,
-        audioData: params.audioData,
-        ...(params.triggerMensagemCreatedAt &&
-        params.triggerMensagemCreatedAt.trim().length > 0
-          ? {
-              triggerMensagemId: params.triggerMensagemId,
-              triggerMensagemCreatedAt: params.triggerMensagemCreatedAt.trim(),
-            }
-          : {}),
-        _queueRetryCount: params.queueRetryCount + 1,
-      },
-      waitSec,
-      params.env,
-    );
-
-    logGenerateAi("generate_ai_requeued_aggregation_window", {
-      conversaId: params.conversaId,
-      waitSec,
-      nextRetryCount: params.queueRetryCount + 1,
-    });
-
-    return {
-      message: "Janela de agregação — nova tentativa agendada",
-      status: "skipped",
-      reason: "aggregation_window_requeued",
-      data: {
-        retryInSeconds: waitSec,
-        retryCount: params.queueRetryCount + 1,
-      },
-    };
-  }
-
-  if (
-    ageSec !== null &&
-    ageSec < claimWindowSeconds &&
-    params.queueRetryCount >= CHATBOT_QUEUE_SELF_RETRY_MAX
-  ) {
-    console.error(
-      `❌ Limite de re-enfileiramentos (${CHATBOT_QUEUE_SELF_RETRY_MAX}) atingido com pendente ainda na janela`,
-    );
-  }
-
-  logGenerateAi("generate_ai_empty_claim_final", {
-    conversaId: params.conversaId,
-    reason: "no_eligible_batch",
-    queueRetryCount: params.queueRetryCount,
-    ageSec,
-  });
-
-  return {
-    message: "Sem lote elegível para processamento",
-    status: "skipped",
-    reason: "no_eligible_batch",
-  };
 }
 
 /**
@@ -800,30 +539,17 @@ async function whatsappRowToAgentInput(
 
 /**
  * Histórico do atendimento (`whatsapp_mensagens.atendimento_id`) mais a
- * mensagem de sistema do agente responsável. Une ids do claim que ainda não
- * tenham `atendimento_id` preenchido (ex.: legado imediato).
+ * mensagem de sistema do agente responsável.
  */
 async function buildAgentInputsFromAtendimentoWindow(params: {
   atendimentoId: string;
   agenteResponsavel: AgentId;
-  /** Mensagens do claim que devem entrar mesmo sem vínculo na coluna nova. */
-  ensureMessageIds?: readonly string[] | undefined;
   env: EnvConfig;
 }): Promise<AgentInputItem[]> {
-  let rows = await getMensagensByAtendimentoId(
+  const rows = await getMensagensByAtendimentoId(
     params.atendimentoId,
     params.env,
   );
-
-  const ensureIds = params.ensureMessageIds ?? [];
-  if (ensureIds.length > 0) {
-    const have = new Set(rows.map((r) => r.id));
-    const missing = ensureIds.filter((id) => !have.has(id));
-    if (missing.length > 0) {
-      const extra = await getWhatsappMensagensByIds(missing, params.env);
-      rows = mergeWhatsappMensagensChronological(rows, extra);
-    }
-  }
 
   const items: AgentInputItem[] = [
     buildResponsibleAgentSystemMessage(params.agenteResponsavel),
