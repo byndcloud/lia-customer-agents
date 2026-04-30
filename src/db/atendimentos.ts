@@ -51,6 +51,39 @@ export interface ActiveChatbotServiceRow {
   readonly agenteResponsavel: AgentId;
 }
 
+type ActiveAtendimentoRow = {
+  id: string;
+  tipo_responsavel: string;
+  iniciado_em: string;
+  agente_responsavel: string | null;
+};
+
+/**
+ * Atendimento em aberto mais recente da conversa (por `iniciado_em`).
+ * Usa `limit(1)` para nunca cair no caso maybeSingle + múltiplas linhas
+ * (o PostgREST mapeia isso para `PGRST116`, que antes era tratado como "sem linha").
+ */
+async function selectLatestOpenAtendimentoRow(
+  conversaId: string,
+  env?: EnvConfig,
+): Promise<ActiveAtendimentoRow | null> {
+  const supabase = getSupabaseClient(env);
+  const { data, error } = await supabase
+    .from("whatsapp_atendimentos")
+    .select("id, tipo_responsavel, iniciado_em, agente_responsavel")
+    .eq("conversa_id", conversaId)
+    .is("finalizado_em", null)
+    .order("iniciado_em", { ascending: false })
+    .limit(1)
+    .maybeSingle<ActiveAtendimentoRow>();
+
+  if (error && error.code !== "PGRST116") {
+    throw new Error(`Erro ao verificar atendimento: ${error.message}`);
+  }
+
+  return data ?? null;
+}
+
 /**
  * Garante que a conversa tem um atendimento em andamento. Se não houver,
  * cria um do tipo `chatbot`. Retorna o id e se foi criado nesta chamada.
@@ -62,23 +95,7 @@ export async function ensureActiveService(
 ): Promise<EnsureActiveServiceResult> {
   const supabase = getSupabaseClient(env);
 
-  const { data: ativo, error: searchError } = await supabase
-    .from("whatsapp_atendimentos")
-    .select("id, tipo_responsavel, iniciado_em, agente_responsavel")
-    .eq("conversa_id", conversaId)
-    .is("finalizado_em", null)
-    .maybeSingle<{
-      id: string;
-      tipo_responsavel: string;
-      iniciado_em: string;
-      agente_responsavel: string | null;
-    }>();
-
-  if (searchError && searchError.code !== "PGRST116") {
-    throw new Error(
-      `Erro ao verificar atendimento: ${searchError.message}`,
-    );
-  }
+  const ativo = await selectLatestOpenAtendimentoRow(conversaId, env);
 
   if (ativo) {
     return {
@@ -101,24 +118,38 @@ export async function ensureActiveService(
       agente_responsavel: "orchestrator",
     })
     .select("id, iniciado_em, agente_responsavel")
-    .single<{
+    .maybeSingle<{
       id: string;
       iniciado_em: string;
       agente_responsavel: string | null;
     }>();
 
-  if (insertError || !novo) {
-    throw new Error(
-      `Erro ao criar atendimento: ${insertError?.message ?? "unknown"}`,
-    );
+  if (!insertError && novo) {
+    return {
+      atendimentoId: novo.id,
+      isNew: true,
+      iniciadoEm: novo.iniciado_em,
+      agenteResponsavel: normalizeAgenteResponsavel(novo.agente_responsavel),
+    };
   }
 
-  return {
-    atendimentoId: novo.id,
-    isNew: true,
-    iniciadoEm: novo.iniciado_em,
-    agenteResponsavel: normalizeAgenteResponsavel(novo.agente_responsavel),
-  };
+  if (insertError?.code === "23505") {
+    const existing = await selectLatestOpenAtendimentoRow(conversaId, env);
+    if (existing) {
+      return {
+        atendimentoId: existing.id,
+        isNew: false,
+        iniciadoEm: existing.iniciado_em,
+        agenteResponsavel: normalizeAgenteResponsavel(
+          existing.agente_responsavel,
+        ),
+      };
+    }
+  }
+
+  throw new Error(
+    `Erro ao criar atendimento: ${insertError?.message ?? "unknown"}`,
+  );
 }
 
 /** Campos mínimos de conversa para decidir vínculo com `whatsapp_atendimentos`. */

@@ -19,6 +19,7 @@ import { updateConversationStatus } from "../../db/conversations.js";
 import {
   getMensagensByAtendimentoId,
   getWhatsappMensagensByIds,
+  hasClienteMensagemStrictlyAfter,
   mergeWhatsappMensagensChronological,
   saveChatbotMessage,
   type WhatsappMensagem,
@@ -189,6 +190,9 @@ interface GenerateAiRequestBody {
   organizacaoId?: string;
   clienteId?: string;
   audioData?: { storageUrl: string; mimetype: string };
+  /** Mensagem do cliente que originou a task (webhook → Cloud Tasks). */
+  triggerMensagemId?: string;
+  triggerMensagemCreatedAt?: string;
   /** Definido ao re-enfileirar quando a janela de agregação ainda está aberta. */
   _queueRetryCount?: number;
 }
@@ -233,6 +237,8 @@ async function handleGenerate(
     organizacaoId,
     clienteId,
     audioData,
+    triggerMensagemId,
+    triggerMensagemCreatedAt,
     _queueRetryCount: rawQueueRetry,
   } = body;
 
@@ -300,6 +306,35 @@ async function handleGenerate(
       // No-op atual: o sistema de avaliação foi migrado para o MCP.
     }
 
+    const triggerCreatedAt =
+      typeof triggerMensagemCreatedAt === "string" &&
+      triggerMensagemCreatedAt.trim().length > 0
+        ? triggerMensagemCreatedAt.trim()
+        : undefined;
+
+    if (triggerCreatedAt) {
+      const superseded = await hasClienteMensagemStrictlyAfter(
+        conversaId,
+        triggerCreatedAt,
+        env,
+      );
+      if (superseded) {
+        logGenerateAi("generate_ai_skipped", {
+          conversaId,
+          reason: "superseded_by_newer_client_message",
+          triggerMensagemId: triggerMensagemId ?? null,
+          triggerMensagemCreatedAt: triggerCreatedAt,
+        });
+        res.status(200).json({
+          message:
+            "Task obsoleta — já existe mensagem do cliente mais recente; não processado",
+          status: "skipped",
+          reason: "superseded_by_newer_client_message",
+        });
+        return;
+      }
+    }
+
     await updateConversationStatus(conversaId, "em_atendimento_chatbot", env);
 
     if (!organizacaoId || String(organizacaoId).trim() === "") {
@@ -364,6 +399,8 @@ async function handleGenerate(
         clienteId,
         mensagem,
         audioData,
+        triggerMensagemId,
+        triggerMensagemCreatedAt,
         queueRetryCount,
         env,
       });
@@ -606,6 +643,8 @@ async function handleEmptyClaim(params: {
   clienteId?: string | undefined;
   mensagem?: string | undefined;
   audioData?: ChatbotQueuePayload["audioData"];
+  triggerMensagemId?: string | undefined;
+  triggerMensagemCreatedAt?: string | undefined;
   queueRetryCount: number;
   env: EnvConfig;
 }): Promise<Record<string, unknown>> {
@@ -666,6 +705,13 @@ async function handleEmptyClaim(params: {
         clienteId: params.clienteId ?? "",
         organizacaoId: params.organizacaoId!,
         audioData: params.audioData,
+        ...(params.triggerMensagemCreatedAt &&
+        params.triggerMensagemCreatedAt.trim().length > 0
+          ? {
+              triggerMensagemId: params.triggerMensagemId,
+              triggerMensagemCreatedAt: params.triggerMensagemCreatedAt.trim(),
+            }
+          : {}),
         _queueRetryCount: params.queueRetryCount + 1,
       },
       waitSec,

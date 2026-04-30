@@ -68,6 +68,8 @@ interface MessageProcessingState {
   messageContent: string;
   shouldEnqueueToAI: boolean;
   audioData?: { storageUrl: string; mimetype: string };
+  /** Última mensagem persistida do cliente neste webhook (para correlacionar a task). */
+  triggerMensagem?: { id: string; created_at: string };
 }
 
 function headerValueToString(
@@ -279,27 +281,37 @@ async function processMessage(
   switch (body.data.messageType) {
     case "conversation": {
       state.messageContent = body.data.message.conversation || "";
-      await saveIncomingMessage(
-        conversa.id,
-        body.data.key.fromMe,
-        state.messageContent,
-        undefined,
-        env,
-        atendimentoIdPersist,
-      );
+      {
+        const row = await saveIncomingMessage(
+          conversa.id,
+          body.data.key.fromMe,
+          state.messageContent,
+          undefined,
+          env,
+          atendimentoIdPersist,
+        );
+        if (!body.data.key.fromMe) {
+          state.triggerMensagem = { id: row.id, created_at: row.created_at };
+        }
+      }
       break;
     }
 
     case "extendedTextMessage": {
       state.messageContent = body.data.message.extendedTextMessage?.text || "";
-      await saveIncomingMessage(
-        conversa.id,
-        body.data.key.fromMe,
-        state.messageContent,
-        undefined,
-        env,
-        atendimentoIdPersist,
-      );
+      {
+        const row = await saveIncomingMessage(
+          conversa.id,
+          body.data.key.fromMe,
+          state.messageContent,
+          undefined,
+          env,
+          atendimentoIdPersist,
+        );
+        if (!body.data.key.fromMe) {
+          state.triggerMensagem = { id: row.id, created_at: row.created_at };
+        }
+      }
       break;
     }
 
@@ -308,14 +320,19 @@ async function processMessage(
         text?: string;
       };
       state.messageContent = reactionMsg?.text || "";
-      await saveIncomingMessage(
-        conversa.id,
-        body.data.key.fromMe,
-        state.messageContent,
-        undefined,
-        env,
-        atendimentoIdPersist,
-      );
+      {
+        const row = await saveIncomingMessage(
+          conversa.id,
+          body.data.key.fromMe,
+          state.messageContent,
+          undefined,
+          env,
+          atendimentoIdPersist,
+        );
+        if (!body.data.key.fromMe) {
+          state.triggerMensagem = { id: row.id, created_at: row.created_at };
+        }
+      }
       break;
     }
 
@@ -418,7 +435,7 @@ async function processAudioMessage(
     env,
   );
 
-  await saveMediaMessage(
+  const savedAudio = await saveMediaMessage(
     conversa.id,
     mediaUrl,
     mimetype,
@@ -428,6 +445,12 @@ async function processAudioMessage(
     env,
     atendimentoIdPersist,
   );
+  if (!body.data.key.fromMe) {
+    state.triggerMensagem = {
+      id: savedAudio.id,
+      created_at: savedAudio.created_at,
+    };
+  }
 
   if (body.data.key.fromMe) return;
 
@@ -517,7 +540,7 @@ async function processUnsupportedMediaMessage(
     env,
   );
 
-  await saveMediaMessage(
+  const savedMedia = await saveMediaMessage(
     conversa.id,
     mediaUrl,
     mimetype,
@@ -527,6 +550,12 @@ async function processUnsupportedMediaMessage(
     env,
     atendimentoIdPersist,
   );
+  if (!body.data.key.fromMe) {
+    state.triggerMensagem = {
+      id: savedMedia.id,
+      created_at: savedMedia.created_at,
+    };
+  }
 
   const captionText = caption.trim();
   const label = MEDIA_LABEL[messageType] ?? "arquivo";
@@ -704,6 +733,12 @@ async function maybeEnfileirarChatbot(
         clienteId: conversa.pessoa_id ?? "",
         organizacaoId: organizationId,
         audioData: state.audioData,
+        ...(state.triggerMensagem
+          ? {
+              triggerMensagemId: state.triggerMensagem.id,
+              triggerMensagemCreatedAt: state.triggerMensagem.created_at,
+            }
+          : {}),
       },
       undefined,
       env,

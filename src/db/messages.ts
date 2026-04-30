@@ -188,6 +188,30 @@ export async function getConversationMessages(
   return data ?? [];
 }
 
+/**
+ * Indica se já existe mensagem do **cliente** nesta conversa com `created_at`
+ * estritamente posterior ao instante informado (ex.: task da fila ficou obsoleta
+ * após novas mensagens do usuário).
+ */
+export async function hasClienteMensagemStrictlyAfter(
+  conversaId: string,
+  afterCreatedAtIso: string,
+  env?: EnvConfig,
+): Promise<boolean> {
+  const supabase = getSupabaseClient(env);
+  const { data, error } = await supabase
+    .from("whatsapp_mensagens")
+    .select("id")
+    .eq("conversa_id", conversaId)
+    .eq("remetente", "cliente")
+    .gt("created_at", afterCreatedAtIso)
+    .limit(1)
+    .maybeSingle<{ id: string }>();
+
+  if (error) throw error;
+  return data != null;
+}
+
 /** Une listas por `id` e ordena por `created_at` crescente. */
 export function mergeWhatsappMensagensChronological(
   a: readonly WhatsappMensagem[],

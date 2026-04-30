@@ -27,6 +27,13 @@ export interface ChatbotQueuePayload {
   instancia: string;
   clienteId: string;
   organizacaoId: string;
+  /**
+   * Mensagem do cliente que disparou esta task (após persistir no webhook).
+   * Usado em `/generate-ai-response` para ignorar tasks obsoletas quando já
+   * existe mensagem de cliente mais recente na conversa.
+   */
+  triggerMensagemId?: string | undefined;
+  triggerMensagemCreatedAt?: string | undefined;
   isAutoResponse?: boolean | undefined;
   /** Incrementado pela rota quando o lote ainda está aberto e re-enfileira. */
   _queueRetryCount?: number | undefined;
