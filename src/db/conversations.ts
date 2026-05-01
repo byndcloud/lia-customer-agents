@@ -185,6 +185,27 @@ export async function closeConversation(
   if (error) throw error;
 }
 
+/**
+ * Follow-up 24h com triagem inativa: fila humana em vez de encerrar a conversa.
+ * Desliga o chatbot para não enfileirar IA até novo atendimento.
+ */
+export async function setConversationAguardandoAtendimentoFollowupTriagem(
+  conversaId: string,
+  env?: EnvConfig,
+): Promise<void> {
+  const supabase = getSupabaseClient(env);
+  const { error } = await supabase
+    .from("whatsapp_conversas")
+    .update({
+      status: "aguardando_atendimento",
+      inactive_since: null,
+      chatbot_ativo: false,
+      updated_at: new Date().toISOString(),
+    })
+    .eq("id", conversaId);
+  if (error) throw error;
+}
+
 /** Lê apenas `status` da conversa (helper para followups). */
 export async function getConversationStatus(
   conversaId: string,

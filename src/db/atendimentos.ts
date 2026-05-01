@@ -85,6 +85,46 @@ async function selectLatestOpenAtendimentoRow(
 }
 
 /**
+ * Valor persistido em `agente_responsavel` do atendimento em aberto mais
+ * recente (`finalizado_em` nulo), ou `null` se não houver linha aberta.
+ */
+export async function getOpenAtendimentoAgenteResponsavelRaw(
+  conversaId: string,
+  env?: EnvConfig,
+): Promise<string | null> {
+  const row = await selectLatestOpenAtendimentoRow(conversaId, env);
+  return row?.agente_responsavel ?? null;
+}
+
+/**
+ * Finaliza atendimentos `em_andamento` da conversa como transferidos para a
+ * fila humana (follow-up 24h com triagem inativa).
+ */
+export async function finalizarAtendimentosTransferidosFilaPorFollowup24hTriagem(
+  conversaId: string,
+  env?: EnvConfig,
+): Promise<void> {
+  const supabase = getSupabaseClient(env);
+  const notasFinalizacao =
+    "Follow-up 24h: conversa colocada em aguardando atendimento (triagem inativa).";
+
+  const { error } = await supabase
+    .from("whatsapp_atendimentos")
+    .update({
+      status_atendimento: "finalizado",
+      finalizado_em: new Date().toISOString(),
+      updated_at: new Date().toISOString(),
+      resultado: "Transferido por ausência de resposta e ser triagem.",
+      notas_finalizacao: notasFinalizacao,
+    })
+    .eq("conversa_id", conversaId)
+    .eq("status_atendimento", "em_andamento")
+    .is("finalizado_em", null);
+
+  if (error) throw error;
+}
+
+/**
  * Garante que a conversa tem um atendimento em andamento. Se não houver,
  * cria um do tipo `chatbot`. Retorna o id e se foi criado nesta chamada.
  */

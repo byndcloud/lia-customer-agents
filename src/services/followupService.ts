@@ -6,10 +6,15 @@ import { saveChatbotMessage } from "../db/messages.js";
 import { insertWhatsappConversationResponse } from "../db/responses.js";
 import {
   closeConversation,
-  setConversationInactiveSince,
   getConversationStatus,
+  setConversationAguardandoAtendimentoFollowupTriagem,
+  setConversationInactiveSince,
 } from "../db/conversations.js";
-import { finalizarAtendimentosAtivosPorConversa } from "../db/atendimentos.js";
+import {
+  finalizarAtendimentosAtivosPorConversa,
+  finalizarAtendimentosTransferidosFilaPorFollowup24hTriagem,
+  getOpenAtendimentoAgenteResponsavelRaw,
+} from "../db/atendimentos.js";
 import { sendEvolutionMessage } from "./evolutionApi.js";
 import { resolveWhatsAppInstance } from "./whatsappInstanceResolver.js";
 
@@ -82,6 +87,13 @@ Regras de comportamento após a resposta do usuário:
 Siga essas regras de forma determinística.
 `;
 
+const FOLLOWUP_30MIN_DEVELOPER_MSG_TRIAGE = `
+O usuário está inativo há mais de 30 minutos e estava no meio de uma triagem. 
+Inicie o fluxo de encerramento, gere uma mensagem curta e amigável para validar se existe mais alguma informação que o usuário queira compartilhar. O foco deve ser na sua utilidade como assistente.
+
+Siga essas regras de forma determinística.
+`;
+
 const FOLLOWUP_24H_DEVELOPER_MSG = `O usuário está inativo há mais de 24 horas e a conversa será encerrada. Envie uma mensagem como essa "Como a nossa conversa parou por aqui, vou encerrar o atendimento. Se precisar de algo novo, é só me chamar! 😊"`;
 
 /**
@@ -128,6 +140,8 @@ async function gerarMensagemComResponsesApi(
 /**
  * Processa conversas inativas há ~30 min: gera mensagem de "ainda precisa de
  * ajuda?" e marca `inactive_since` para evitar duplicação.
+ * Com `agente_responsavel` `triage` ou `triage_trabalhista`, usa
+ * `FOLLOWUP_30MIN_DEVELOPER_MSG_TRIAGE` em vez do prompt padrão.
  */
 export async function processFollowup30min(
   env?: EnvConfig,
@@ -189,8 +203,18 @@ export async function processFollowup30min(
         continue;
       }
 
+      const agenteRaw = await getOpenAtendimentoAgenteResponsavelRaw(
+        conversa.id,
+        cfg,
+      );
+      const emTriagem =
+        agenteRaw === "triage" || agenteRaw === "triage_trabalhista";
+      const developerMsg30 = emTriagem
+        ? FOLLOWUP_30MIN_DEVELOPER_MSG_TRIAGE
+        : FOLLOWUP_30MIN_DEVELOPER_MSG;
+
       const { responseContent, responseId, tokensUsed } =
-        await gerarMensagemComResponsesApi(FOLLOWUP_30MIN_DEVELOPER_MSG, cfg);
+        await gerarMensagemComResponsesApi(developerMsg30, cfg);
 
       const atendimentoId = await resolveAtendimentoIdForPersistedMessage(
         {
@@ -277,6 +301,10 @@ export async function processFollowup30min(
  * Processa conversas inativas há ~24 h: encerra a conversa e finaliza
  * atendimentos ativos. Quando o status já é `em_atendimento_whatsapp`,
  * finaliza sem gerar nova mensagem (atendente humano assumiu).
+ *
+ * Se o atendimento aberto tiver `agente_responsavel` `triage` ou
+ * `triage_trabalhista`, não encerra: finaliza o atendimento como transferido
+ * e define a conversa como `aguardando_atendimento` (fila humana).
  */
 export async function processFollowup24h(
   env?: EnvConfig,
@@ -300,6 +328,37 @@ export async function processFollowup24h(
 
   for (const conversa of lista) {
     try {
+      const agenteRaw = await getOpenAtendimentoAgenteResponsavelRaw(
+        conversa.id,
+        cfg,
+      );
+      const encaminharParaFilaTriagem =
+        agenteRaw === "triage" || agenteRaw === "triage_trabalhista";
+
+      if (encaminharParaFilaTriagem) {
+        try {
+          await finalizarAtendimentosTransferidosFilaPorFollowup24hTriagem(
+            conversa.id,
+            cfg,
+          );
+        } catch (atendimentoError) {
+          console.warn(
+            `⚠️ [followup-24h] Erro ao finalizar atendimentos (fila triagem) (${conversa.id}):`,
+            atendimentoError,
+          );
+        }
+        await setConversationAguardandoAtendimentoFollowupTriagem(
+          conversa.id,
+          cfg,
+        );
+        result.processadas++;
+        result.detalhes.push({
+          conversa_id: conversa.id,
+          status: "aguardando_atendimento",
+        });
+        continue;
+      }
+
       const deveCriarMensagem =
         conversa.status !== "em_atendimento_whatsapp";
 
