@@ -1,10 +1,5 @@
 import type { IncomingHttpHeaders } from "node:http";
-import express, {
-  type Express,
-  type NextFunction,
-  type Request,
-  type Response,
-} from "express";
+import { Hono } from "hono";
 import { ZodError } from "zod";
 import { loadEnv, type EnvConfig } from "../config/env.js";
 import {
@@ -13,6 +8,7 @@ import {
   extractBearerToken,
   verifySupabaseKey,
 } from "./auth.js";
+import type { LiaHttpVariables } from "./honoVariables.js";
 import { buildDeliverResponseRouter } from "./routes/deliverResponse.js";
 import { buildFollowup24hRouter } from "./routes/followup24h.js";
 import { buildFollowup30minRouter } from "./routes/followup30min.js";
@@ -20,6 +16,9 @@ import { buildGenerateAiResponseRouter } from "./routes/generateAiResponse.js";
 import { buildRunRouter } from "./routes/run.js";
 import { buildWebhookEvolutionRouter } from "./routes/webhookEvolution.js";
 import { buildInternalErrorLogDetail } from "./internalErrorLog.js";
+
+/** App HTTP principal (Hono). */
+export type LiaHonoApp = Hono<{ Variables: LiaHttpVariables }>;
 
 /**
  * Parâmetros opcionais para montar o app (ex.: `env` em testes).
@@ -29,8 +28,10 @@ export interface BuildAppParams {
   readonly env?: EnvConfig;
 }
 
+const JSON_BODY_LIMIT_BYTES = 1_048_576; // 1 MiB (igual ao antigo `express.json({ limit: "1mb" })`).
+
 /**
- * Monta a instância Express da Cloud Function.
+ * Monta a instância Hono da Cloud Function.
  *
  * Rotas expostas:
  *  - `GET  /health`               — liveness probe.
@@ -42,44 +43,108 @@ export interface BuildAppParams {
  *  - `POST /followup-24h`         — disparado pelo `pg_cron`.
  *
  * **Todas** as rotas exigem `Authorization: Bearer <SUPABASE_ANON_KEY | SUPABASE_SERVICE_ROLE_KEY>`
- * (comparação time-safe com o env). Erros são mapeados em `errorHandler`.
+ * (comparação time-safe com o env). Erros são mapeados em `onError`.
  */
-export function buildApp(params: BuildAppParams = {}): Express {
+export function buildApp(params: BuildAppParams = {}): LiaHonoApp {
   const env = params.env ?? loadEnv();
 
-  const app = express();
-  app.disable("x-powered-by");
-  (app.locals as { env: EnvConfig }).env = env;
-  app.use(express.json({ limit: "1mb" }));
+  const app = new Hono<{ Variables: LiaHttpVariables }>();
 
-  app.use((req: Request, _res: Response, next: NextFunction) => {
+  app.use(async (c, next) => {
+    c.set("env", env);
+    await next();
+  });
+
+  app.use(async (c, next) => {
+    const method = c.req.method;
+    if (method === "GET" || method === "HEAD") {
+      await next();
+      return;
+    }
+    const ct = c.req.header("content-type") ?? "";
+    if (!ct.includes("application/json")) {
+      c.set("jsonBody", undefined);
+      await next();
+      return;
+    }
+    const text = await c.req.text();
+    if (Buffer.byteLength(text, "utf8") > JSON_BODY_LIMIT_BYTES) {
+      return c.json({ error: "payload_too_large" }, 413);
+    }
+    try {
+      c.set("jsonBody", text.length === 0 ? {} : JSON.parse(text) as unknown);
+    } catch {
+      return c.json({ error: "invalid_json" }, 400);
+    }
+    await next();
+  });
+
+  app.use(async (c, next) => {
     try {
       verifySupabaseKey({
-        authorizationHeader: req.header("authorization"),
+        authorizationHeader: c.req.header("authorization"),
         anonKey: env.supabaseAnonKey,
         serviceRoleKey: env.supabaseServiceRoleKey,
       });
-      next();
+      await next();
     } catch (error) {
-      next(error);
+      throw error;
     }
   });
 
-  app.get("/health", (_req, res) => {
-    res.status(200).json({ status: "ok" });
+  app.get("/health", (c) => c.json({ status: "ok" }, 200));
+
+  app.route("/run", buildRunRouter({ env }));
+  app.route("/webhook-evolution", buildWebhookEvolutionRouter({ env }));
+  app.route("/generate-ai-response", buildGenerateAiResponseRouter({ env }));
+  app.route("/deliver-response", buildDeliverResponseRouter({ env }));
+  app.route("/followup-30min", buildFollowup30minRouter({ env }));
+  app.route("/followup-24h", buildFollowup24hRouter({ env }));
+
+  app.onError((err, c) => {
+    if (err instanceof UnauthorizedError) {
+      const envConfig = c.var.env;
+      logIncomingRequest(c, "unauthorized", {
+        authError: true,
+        unauthorizedReason: err.reason,
+        env: envConfig,
+      });
+      logError("unauthorized", err.reason);
+      return c.json({ error: "unauthorized" }, 401);
+    }
+
+    if (err instanceof AuthConfigError) {
+      logIncomingRequest(c, "auth_config_error", { authError: true });
+      logError("auth_config_error", err.message);
+      return c.json({ error: "server_misconfigured" }, 500);
+    }
+
+    if (err instanceof ZodError) {
+      if (c.finalized) {
+        logError("invalid_input_after_headers_sent", {
+          issues: err.issues,
+          request: requestSummary(c),
+        });
+        return new Response(null, { status: 204 });
+      }
+      return c.json({ error: "invalid_input", details: err.issues }, 400);
+    }
+
+    logError(
+      "internal_error",
+      buildInternalErrorLogDetail(err, {
+        method: c.req.method,
+        path: requestPath(c),
+        originalUrl: requestOriginalUrl(c),
+        baseUrl: "",
+      }),
+    );
+
+    if (!c.finalized) {
+      return c.json({ error: "internal_error" }, 500);
+    }
+    return new Response(null, { status: 204 });
   });
-
-  app.use("/run", buildRunRouter({ env }));
-  app.use("/webhook-evolution", buildWebhookEvolutionRouter({ env }));
-  app.use(
-    "/generate-ai-response",
-    buildGenerateAiResponseRouter({ env }),
-  );
-  app.use("/deliver-response", buildDeliverResponseRouter({ env }));
-  app.use("/followup-30min", buildFollowup30minRouter({ env }));
-  app.use("/followup-24h", buildFollowup24hRouter({ env }));
-
-  app.use(errorHandler);
 
   return app;
 }
@@ -88,59 +153,6 @@ export function buildApp(params: BuildAppParams = {}): Express {
  * Mapeia erros conhecidos para status HTTP estáveis. Erros desconhecidos
  * viram 500 com mensagem genérica — o stack fica apenas no log.
  */
-function errorHandler(
-  err: unknown,
-  req: Request,
-  res: Response,
-  // Express exige 4 params para identificar error handler.
-  _next: NextFunction,
-): void {
-  if (err instanceof UnauthorizedError) {
-    const envConfig = (req.app.locals as { env?: EnvConfig }).env;
-    logIncomingRequest(req, "unauthorized", {
-      authError: true,
-      unauthorizedReason: err.reason,
-      ...(envConfig !== undefined ? { env: envConfig } : {}),
-    });
-    logError("unauthorized", err.reason);
-    res.status(401).json({ error: "unauthorized" });
-    return;
-  }
-
-  if (err instanceof AuthConfigError) {
-    logIncomingRequest(req, "auth_config_error", { authError: true });
-    logError("auth_config_error", err.message);
-    res.status(500).json({ error: "server_misconfigured" });
-    return;
-  }
-
-  if (err instanceof ZodError) {
-    if (res.headersSent) {
-      logError("invalid_input_after_headers_sent", {
-        issues: err.issues,
-        request: requestSummary(req),
-      });
-      return;
-    }
-    res.status(400).json({ error: "invalid_input", details: err.issues });
-    return;
-  }
-
-  logError(
-    "internal_error",
-    buildInternalErrorLogDetail(err, {
-      method: req.method,
-      path: req.path,
-      originalUrl: req.originalUrl,
-      baseUrl: req.baseUrl,
-    }),
-  );
-
-  if (!res.headersSent) {
-    res.status(500).json({ error: "internal_error" });
-  }
-}
-
 function logError(kind: string, detail: unknown): void {
   const payload = {
     level: "error",
@@ -151,11 +163,28 @@ function logError(kind: string, detail: unknown): void {
   console.error(`\n${JSON.stringify(payload, null, 2)}\n`);
 }
 
-function requestSummary(req: Request): Pick<Request, "method" | "path" | "originalUrl"> {
+function requestPath(c: { req: { path: string } }): string {
+  return c.req.path;
+}
+
+function requestOriginalUrl(c: { req: { url: string } }): string {
+  try {
+    const u = new URL(c.req.url, "http://localhost");
+    return `${u.pathname}${u.search}`;
+  } catch {
+    return c.req.url;
+  }
+}
+
+function requestSummary(c: { req: { method: string; path: string; url: string } }): {
+  method: string;
+  path: string;
+  originalUrl: string;
+} {
   return {
-    method: req.method,
-    path: req.path,
-    originalUrl: req.originalUrl,
+    method: c.req.method,
+    path: c.req.path,
+    originalUrl: requestOriginalUrl(c),
   };
 }
 
@@ -176,7 +205,16 @@ const SENSITIVE_HEADER_NAMES = new Set([
  *   `Bearer` (mesmo valor usado na comparação) e os tamanhos das chaves no env.
  */
 function logIncomingRequest(
-  req: Request,
+  c: {
+    req: {
+      method: string;
+      path: string;
+      url: string;
+      header: (name: string) => string | undefined;
+      raw: { headers: Headers };
+    };
+    var: LiaHttpVariables;
+  },
   context: string,
   options: {
     authError?: boolean;
@@ -187,19 +225,21 @@ function logIncomingRequest(
   const logSecrets = process.env.LOG_SENSITIVE_REQUEST === "1";
   const redactAuthInPlainField =
     process.env.REDACT_AUTHORIZATION_IN_LOGS === "1";
-  const rawAuth = headerValueToString(req.headers.authorization);
+  const rawAuth = c.req.header("authorization");
   const showPlain =
     !redactAuthInPlainField || logSecrets;
+
+  const headersObj = headersToIncomingLike(c.req.raw.headers);
 
   const payload: Record<string, unknown> = {
     level: "debug",
     event: "incoming_request",
     context,
-    method: req.method,
-    path: req.path,
-    originalUrl: req.originalUrl,
-    headers: redactHeaders(req.headers, logSecrets),
-    body: req.body,
+    method: c.req.method,
+    path: c.req.path,
+    originalUrl: requestOriginalUrl(c),
+    headers: redactHeaders(headersObj, logSecrets),
+    body: c.var.jsonBody,
   };
 
   if (options.authError && rawAuth !== undefined) {
@@ -247,6 +287,23 @@ function logIncomingRequest(
   console.error(`\n${JSON.stringify(payload, null, 2)}\n`);
 }
 
+/** Converte `Headers` do Fetch para formato compatível com `redactHeaders`. */
+function headersToIncomingLike(headers: Headers): IncomingHttpHeaders {
+  const out: IncomingHttpHeaders = {};
+  headers.forEach((value, key) => {
+    const lower = key.toLowerCase();
+    const prev = out[lower];
+    if (prev === undefined) {
+      out[lower] = value;
+    } else if (Array.isArray(prev)) {
+      prev.push(value);
+    } else {
+      out[lower] = [String(prev), value];
+    }
+  });
+  return out;
+}
+
 function redactHeaders(
   headers: IncomingHttpHeaders,
   logSecrets: boolean,
@@ -275,4 +332,3 @@ function headerValueToString(
   if (value === undefined) return undefined;
   return Array.isArray(value) ? value.join(", ") : value;
 }
-

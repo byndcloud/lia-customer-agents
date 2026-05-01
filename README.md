@@ -54,12 +54,12 @@ npm install
 
 | Script | O que faz |
 | --- | --- |
-| `npm run dev` | Sobe o servidor Express com `tsx watch` (hot reload). |
+| `npm run dev` | Sobe o servidor HTTP (Hono) com `tsx watch` (hot reload). |
 | `npm run start` | Executa `node dist/http/server.js` (usado em Cloud Run). |
 | `npm run start:function` | Sobe via `functions-framework` (simula GCF 2ª gen local). |
 | `npm run typecheck` | Verifica tipos. |
 | `npm run build` | Gera `dist/`. |
-| `npm test` | Roda os testes com Vitest + Supertest. |
+| `npm test` | Roda os testes com Vitest. |
 
 ## Rotas HTTP
 
@@ -263,7 +263,7 @@ A rota `/run` aceita uma das duas formas (mas não ambas):
 
 O fluxo de chat WhatsApp (webhook + IA + entrega + follow-ups) viveu
 historicamente em `legis-prod/supabase/functions/chat-messages` (Deno + Hono)
-e foi portado para este serviço (Node + Express). A edge function continua
+e foi portado para este serviço (Node + Hono). A edge function continua
 hospedando apenas as **rotas administrativas da Evolution**:
 
 - `POST /chat-messages/instance`
@@ -331,7 +331,7 @@ src/
 │   ├── process-info.agent.ts
 │   └── instructions/...
 └── http/
-    ├── app.ts                        # Express app + rotas
+    ├── app.ts                        # App Hono + rotas
     ├── auth.ts                       # Bearer = anon ou service_role (env)
     ├── server.ts                     # entrypoint Cloud Run
     ├── function.ts                   # entrypoint Cloud Functions (GCF 2ª gen)

@@ -15,7 +15,7 @@ export const ORCHESTRATOR_AGENT_NAME = "orchestrator";
  * sem enxergar ferramentas de processo/transbordo do especialista.
  */
 export const ORCHESTRATOR_ALLOWED_MCP_TOOLS: ReadonlyArray<string> = [
-  "getPerson", "transhipment"
+  "getPerson", "transhipment", "finalizar_atendimento", "unresolvedProblem"
 ];
 
 /**

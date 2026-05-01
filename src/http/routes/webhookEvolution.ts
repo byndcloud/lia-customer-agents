@@ -1,5 +1,7 @@
-import { Router, type Request, type Response } from "express";
+import type { Context } from "hono";
+import { Hono } from "hono";
 import type { EnvConfig } from "../../config/env.js";
+import type { LiaHttpVariables } from "../honoVariables.js";
 import {
   createWhatsAppConversation,
   updateConversationStatus,
@@ -45,14 +47,14 @@ export interface WebhookEvolutionDeps {
  *    mensagem com `fromMe = true`.
  *  - Enfileira mensagem para o chatbot (Cloud Tasks) quando aplicável.
  */
+type WebhookCtx = Context<{ Variables: LiaHttpVariables }>;
+
 export function buildWebhookEvolutionRouter(
   deps: WebhookEvolutionDeps,
-): Router {
-  const router = Router();
-  router.post("/", (req: Request, res: Response) =>
-    handleWebhook(req, res, deps),
-  );
-  return router;
+): Hono<{ Variables: LiaHttpVariables }> {
+  const r = new Hono<{ Variables: LiaHttpVariables }>();
+  r.post("/", async (c) => handleWebhook(c, deps));
+  return r;
 }
 
 /** Pega o JID válido (algumas mensagens usam `remoteJidAlt`). */
@@ -72,47 +74,53 @@ interface MessageProcessingState {
   triggerMensagem?: { id: string; created_at: string };
 }
 
-function headerValueToString(
-  value: string | string[] | undefined,
-): string | undefined {
-  if (value === undefined) return undefined;
-  return Array.isArray(value) ? value.join(", ") : value;
+function requestOriginalUrl(c: WebhookCtx): string {
+  try {
+    const u = new URL(c.req.url, "http://localhost");
+    return `${u.pathname}${u.search}`;
+  } catch {
+    return c.req.url;
+  }
 }
 
 /** Diagnóstico de o que chegou no POST `/webhook-evolution` (após auth global). */
-function logWebhookEvolutionIncoming(req: Request): void {
-  const authRaw = headerValueToString(req.headers.authorization);
+function logWebhookEvolutionIncoming(c: WebhookCtx): void {
+  const authRaw = c.req.header("authorization");
   const logSecrets = process.env.LOG_SENSITIVE_REQUEST === "1";
+  const forwarded = c.req.header("x-forwarded-for");
+  const ip =
+    c.req.header("x-real-ip")?.trim() ||
+    forwarded?.split(",")[0]?.trim() ||
+    undefined;
   console.info(
     JSON.stringify({
       level: "info",
       event: "webhook_evolution_request",
-      method: req.method,
-      path: req.path,
-      originalUrl: req.originalUrl,
-      ip: req.ip,
-      forwardedFor: req.headers["x-forwarded-for"],
-      userAgent: req.headers["user-agent"],
-      cloudTrace: req.headers["x-cloud-trace-context"],
+      method: c.req.method,
+      path: c.req.path,
+      originalUrl: requestOriginalUrl(c),
+      ip,
+      forwardedFor: forwarded,
+      userAgent: c.req.header("user-agent"),
+      cloudTrace: c.req.header("x-cloud-trace-context"),
       hasAuthorizationHeader: authRaw !== undefined,
       authorizationPreview: authRaw
         ? logSecrets
           ? authRaw
           : `[redacted prefix=${authRaw.slice(0, 12)}… len=${authRaw.length}]`
         : null,
-      contentType: req.headers["content-type"],
-      contentLength: req.headers["content-length"],
+      contentType: c.req.header("content-type"),
+      contentLength: c.req.header("content-length"),
     }),
   );
 }
 
 async function handleWebhook(
-  req: Request,
-  res: Response,
+  c: WebhookCtx,
   deps: WebhookEvolutionDeps,
-): Promise<void> {
-  logWebhookEvolutionIncoming(req);
-  const body = (req.body ?? {}) as EvolutionWebhookData;
+): Promise<Response> {
+  logWebhookEvolutionIncoming(c);
+  const body = (c.var.jsonBody ?? {}) as EvolutionWebhookData;
 
   if (
     !body.event ||
@@ -120,13 +128,11 @@ async function handleWebhook(
     !body.data.message ||
     !body.data.messageType
   ) {
-    res.status(400).json({ error: "Invalid payload structure" });
-    return;
+    return c.json({ error: "Invalid payload structure" }, 400);
   }
 
   if (body.event !== "messages.upsert") {
-    res.status(200).json({ message: "Event ignored" });
-    return;
+    return c.json({ message: "Event ignored" }, 200);
   }
 
   const remoteJid = getValidRemoteJid(body.data.key);
@@ -138,21 +144,19 @@ async function handleWebhook(
   );
 
   if (!activeInstance) {
-    res.status(200).json({
+    return c.json({
       message: "Message ignored - no active WhatsApp instance found",
       instance: body.instance,
-    });
-    return;
+    }, 200);
   }
 
   const organizationId = activeInstance.organization_id;
 
   if (!organizationId) {
-    res.status(404).json({
+    return c.json({
       error: "Organization not found for instance",
       instance: body.instance,
-    });
-    return;
+    }, 404);
   }
 
   let conversa: WhatsappConversa | null = await getConversaByPhoneNumber(
@@ -171,13 +175,12 @@ async function handleWebhook(
     );
 
     if (!conversa) {
-      res.status(200).json({
+      return c.json({
         message: triageEnabled
           ? "Error creating conversation for unknown number"
           : "Triage disabled - phone number not registered as a client",
         phoneNumber,
-      });
-      return;
+      }, 200);
     }
   } else if (conversa.status) {
     const restart = await checkAndRestart(
@@ -203,12 +206,11 @@ async function handleWebhook(
     console.info(
       `[webhook-evolution] organization_id=${organizationId}: mensagem ignorada (não cliente e whatsapp_numeros.triage_enabled=false).`,
     );
-    res.status(200).json({
+    return c.json({
       message:
         "Message ignored — triage disabled for non-client on this WhatsApp instance",
       organizationId,
-    });
-    return;
+    }, 200);
   }
 
   const state = await processMessage(
@@ -247,7 +249,7 @@ async function handleWebhook(
     deps.env,
   );
 
-  res.status(200).json({ message: "Message processed successfully" });
+  return c.json({ message: "Message processed successfully" }, 200);
 }
 
 /**

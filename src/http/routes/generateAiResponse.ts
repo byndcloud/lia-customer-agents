@@ -1,10 +1,7 @@
-import {
-  Router,
-  type NextFunction,
-  type Request,
-  type Response,
-} from "express";
+import type { Context } from "hono";
+import { Hono } from "hono";
 import { type EnvConfig } from "../../config/env.js";
+import type { LiaHttpVariables } from "../honoVariables.js";
 import { getSupabaseClient } from "../../db/client.js";
 import {
   clampAtendimentoIniciadoEmIfEarlier,
@@ -124,26 +121,24 @@ export interface GenerateAiResponseDeps {
  * ignora a invocação se já houver mensagem de cliente mais nova que a da task,
  * senão carrega todo o histórico de `whatsapp_mensagens` do atendimento ativo.
  */
+type GenerateCtx = Context<{ Variables: LiaHttpVariables }>;
+
 export function buildGenerateAiResponseRouter(
   deps: GenerateAiResponseDeps,
-): Router {
-  const router = Router();
-  router.post("/", (req: Request, res: Response, next: NextFunction) => {
-    void handleGenerate(req, res, deps, next);
-  });
-  return router;
+): Hono<{ Variables: LiaHttpVariables }> {
+  const r = new Hono<{ Variables: LiaHttpVariables }>();
+  r.post("/", async (c) => handleGenerate(c, deps));
+  return r;
 }
 
 async function handleGenerate(
-  req: Request,
-  res: Response,
+  c: GenerateCtx,
   deps: GenerateAiResponseDeps,
-  next: NextFunction,
-): Promise<void> {
+): Promise<Response> {
   const env = deps.env;
   const supabase = getSupabaseClient(env);
 
-  const body = (req.body ?? {}) as GenerateAiRequestBody;
+  const body = (c.var.jsonBody ?? {}) as GenerateAiRequestBody;
 
   const {
     conversaId,
@@ -159,8 +154,7 @@ async function handleGenerate(
   } = body;
 
   if (!conversaId) {
-    res.status(400).json({ error: "conversaId é obrigatório" });
-    return;
+    return c.json({ error: "conversaId é obrigatório" }, 400);
   }
 
   try {
@@ -182,8 +176,7 @@ async function handleGenerate(
 
     if (conversaError) {
       console.error("❌ Erro ao buscar status da conversa:", conversaError);
-      res.status(500).json({ error: "Erro ao verificar status da conversa" });
-      return;
+      return c.json({ error: "Erro ao verificar status da conversa" }, 500);
     }
 
     if (
@@ -195,13 +188,12 @@ async function handleGenerate(
         reason: "human_service_active",
         conversaStatus: conversa?.status ?? null,
       });
-      res.status(200).json({
+      return c.json({
         message:
           "Conversa em atendimento humano - mensagem não processada pelo chatbot",
         status: "skipped",
         reason: "human_service_active",
-      });
-      return;
+      }, 200);
     }
 
     const interception = await shouldInterceptMessage(
@@ -235,23 +227,21 @@ async function handleGenerate(
           triggerMensagemId: triggerMensagemId ?? null,
           triggerMensagemCreatedAt: triggerCreatedAt,
         });
-        res.status(200).json({
+        return c.json({
           message:
             "Task obsoleta — já existe mensagem do cliente mais recente; não processado",
           status: "skipped",
           reason: "superseded_by_newer_client_message",
-        });
-        return;
+        }, 200);
       }
     }
 
     await updateConversationStatus(conversaId, "em_atendimento_chatbot", env);
 
     if (!organizacaoId || String(organizacaoId).trim() === "") {
-      res.status(400).json({
+      return c.json({
         error: "organizacaoId é obrigatório para gerar resposta",
-      });
-      return;
+      }, 400);
     }
 
     const activeService = await ensureActiveService(
@@ -283,12 +273,11 @@ async function handleGenerate(
         reason: "no_messages_for_atendimento",
         atendimentoId: activeService.atendimentoId,
       });
-      res.status(200).json({
+      return c.json({
         message: "Nenhuma mensagem vinculada a este atendimento",
         status: "skipped",
         reason: "no_messages_for_atendimento",
-      });
-      return;
+      }, 200);
     }
 
     let serviceAtendimento = activeService;
@@ -334,13 +323,12 @@ async function handleGenerate(
         reason: "no_ai_eligible_messages",
         atendimentoMessageCount: atendimentoMensagens.length,
       });
-      res.status(200).json({
+      return c.json({
         message: "Lote sem mensagens elegíveis para IA",
         status: "skipped",
         reason: "no_ai_eligible_messages",
         data: { atendimento_messages_count: atendimentoMensagens.length },
-      });
-      return;
+      }, 200);
     }
 
     const clientIdForAgents =
@@ -431,9 +419,9 @@ async function handleGenerate(
       await resolveWhatsAppInstance({ instancia, conversaId }, env);
 
     if (instanceError) {
-      const status = instanceError === "Conversation not found" ? 404 : 409;
-      res.status(status).json({ error: instanceError });
-      return;
+      const statusCode =
+        instanceError === "Conversation not found" ? 404 : 409;
+      return c.json({ error: instanceError }, statusCode);
     }
 
     if (numeroWhatsapp) {
@@ -466,7 +454,7 @@ async function handleGenerate(
       sentViaEvolution: Boolean(numeroWhatsapp),
     });
 
-    res.status(200).json({
+    return c.json({
       message: "AI response generated successfully",
       status: "completed",
       data: {
@@ -480,7 +468,7 @@ async function handleGenerate(
         aggregated_messages_count: inputs.length,
         agent_used: result.agentUsed,
       },
-    });
+    }, 200);
   } catch (error) {
     const errMsg = error instanceof Error ? error.message : String(error);
     if (/no tool output found/i.test(errMsg)) {
@@ -494,7 +482,7 @@ async function handleGenerate(
         "warn",
       );
     }
-    next(error);
+    throw error;
   }
 }
 

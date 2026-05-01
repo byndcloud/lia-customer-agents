@@ -158,7 +158,7 @@ export function inferLikelyUpstreams(diagnosticText: string): string[] {
 }
 
 /**
- * Caminho HTTP usado para heurísticas (montagens Express preservam o prefixo).
+ * Caminho HTTP usado para heurísticas (prefixo da rota montada, quando aplicável).
  */
 export function resolvePathForIntegrationHints(req: {
   readonly originalUrl: string;

@@ -1,4 +1,5 @@
-import { Router, type Request, type Response } from "express";
+import type { Context } from "hono";
+import { Hono } from "hono";
 import type { EnvConfig } from "../../config/env.js";
 import { getSupabaseClient } from "../../db/client.js";
 import { getActiveWhatsAppInstance } from "../../db/instances.js";
@@ -14,6 +15,7 @@ import {
   isValidUrl,
 } from "../../services/mediaConverter.js";
 import { getConversaByPhoneNumber } from "../../services/whatsapp.js";
+import type { LiaHttpVariables } from "../honoVariables.js";
 
 export interface DeliverResponseDeps {
   env: EnvConfig;
@@ -33,6 +35,8 @@ interface DeliverRequestBody {
   userId?: string;
 }
 
+type DeliverCtx = Context<{ Variables: LiaHttpVariables }>;
+
 /**
  * Rota responsável por entregar uma mensagem (texto, áudio, mídia) via
  * Evolution API. Pode ser chamada com `conversa_id` (rápido) ou apenas com
@@ -40,26 +44,22 @@ interface DeliverRequestBody {
  */
 export function buildDeliverResponseRouter(
   deps: DeliverResponseDeps,
-): Router {
-  const router = Router();
-  router.post("/", (req: Request, res: Response) =>
-    handleDeliver(req, res, deps),
-  );
-  return router;
+): Hono<{ Variables: LiaHttpVariables }> {
+  const r = new Hono<{ Variables: LiaHttpVariables }>();
+  r.post("/", async (c) => handleDeliver(c, deps));
+  return r;
 }
 
 async function handleDeliver(
-  req: Request,
-  res: Response,
+  c: DeliverCtx,
   deps: DeliverResponseDeps,
-): Promise<void> {
+): Promise<Response> {
   const env = deps.env;
   const supabase = getSupabaseClient(env);
-  const body = (req.body ?? {}) as DeliverRequestBody;
+  const body = (c.var.jsonBody ?? {}) as DeliverRequestBody;
 
   if (!body.number) {
-    res.status(400).json({ error: "Missing required field: number" });
-    return;
+    return c.json({ error: "Missing required field: number" }, 400);
   }
 
   try {
@@ -67,10 +67,9 @@ async function handleDeliver(
 
     if (!conversaId) {
       if (!body.organization_id) {
-        res.status(400).json({
+        return c.json({
           error: "Missing required field: organization_id or conversa_id",
-        });
-        return;
+        }, 400);
       }
       const conversa = await getConversaByPhoneNumber(
         body.number,
@@ -78,10 +77,7 @@ async function handleDeliver(
         env,
       );
       if (!conversa) {
-        res
-          .status(404)
-          .json({ error: "No conversation found for this number" });
-        return;
+        return c.json({ error: "No conversation found for this number" }, 404);
       }
       conversaId = conversa.id;
     }
@@ -99,8 +95,7 @@ async function handleDeliver(
     if (conversaOrgError) throw conversaOrgError;
 
     if (!conversaOrg?.organization_id) {
-      res.status(404).json({ error: "Conversation organization not found" });
-      return;
+      return c.json({ error: "Conversation organization not found" }, 404);
     }
 
     const activeInstance = await getActiveWhatsAppInstance(
@@ -108,11 +103,10 @@ async function handleDeliver(
       env,
     );
     if (!activeInstance) {
-      res.status(409).json({
+      return c.json({
         error:
           "No active WhatsApp instance configured for this organization",
-      });
-      return;
+      }, 409);
     }
 
     let evolutionResult: unknown;
@@ -171,10 +165,9 @@ async function handleDeliver(
       content = body.text || "";
 
       if (!content) {
-        res.status(400).json({
+        return c.json({
           error: "Missing required field: text for conversation message",
-        });
-        return;
+        }, 400);
       }
 
       let prefix = "";
@@ -219,18 +212,19 @@ async function handleDeliver(
       atendimentoId,
     );
 
-    res.status(200).json({
+    return c.json({
       message: "Message sent successfully",
       messageType,
       messageId: savedMessage.id,
       evolutionResponse: evolutionResult,
-    });
+    }, 200);
   } catch (err) {
     const errorMessage =
       err instanceof Error ? err.message : "Unknown error";
     console.error("❌ Erro em deliverResponse:", err);
-    res
-      .status(500)
-      .json({ error: "Internal server error", details: errorMessage });
+    return c.json(
+      { error: "Internal server error", details: errorMessage },
+      500,
+    );
   }
 }

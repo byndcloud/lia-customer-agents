@@ -41,7 +41,7 @@ describe("integrationHintForPath", () => {
 });
 
 describe("resolvePathForIntegrationHints", () => {
-  it("prefers originalUrl so montagens Express não viram só '/'", () => {
+  it("prefers originalUrl so route mounts do not collapse to '/'", () => {
     const key = resolvePathForIntegrationHints({
       originalUrl: "/generate-ai-response",
       baseUrl: "",

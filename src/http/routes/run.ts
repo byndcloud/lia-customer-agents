@@ -1,7 +1,8 @@
-import { Router, type NextFunction, type Request, type Response } from "express";
 import type { EnvConfig } from "../../config/env.js";
 import { runAgents } from "../../runtime/run-agents.js";
 import { RunInputSchema } from "../../types.js";
+import type { LiaHttpVariables } from "../honoVariables.js";
+import { Hono } from "hono";
 
 export interface RunRouterDeps {
   env: EnvConfig;
@@ -14,21 +15,16 @@ export interface RunRouterDeps {
  * passa por `/generate-ai-response`, que chama `runAgents()` in-process com
  * o batch agregado.
  */
-export function buildRunRouter(deps: RunRouterDeps): Router {
-  const router = Router();
+export function buildRunRouter(
+  deps: RunRouterDeps,
+): Hono<{ Variables: LiaHttpVariables }> {
+  const r = new Hono<{ Variables: LiaHttpVariables }>();
 
-  router.post(
-    "/",
-    async (req: Request, res: Response, next: NextFunction) => {
-      try {
-        const input = RunInputSchema.parse(req.body);
-        const result = await runAgents(input, { env: deps.env });
-        res.status(200).json(result);
-      } catch (error) {
-        next(error);
-      }
-    },
-  );
+  r.post("/", async (c) => {
+    const input = RunInputSchema.parse(c.var.jsonBody ?? {});
+    const result = await runAgents(input, { env: deps.env });
+    return c.json(result, 200);
+  });
 
-  return router;
+  return r;
 }

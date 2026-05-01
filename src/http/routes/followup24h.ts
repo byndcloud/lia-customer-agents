@@ -1,6 +1,7 @@
-import { Router, type Request, type Response } from "express";
 import type { EnvConfig } from "../../config/env.js";
 import { processFollowup24h } from "../../services/followupService.js";
+import type { LiaHttpVariables } from "../honoVariables.js";
+import { Hono } from "hono";
 
 export interface Followup24hDeps {
   env: EnvConfig;
@@ -12,18 +13,22 @@ export interface Followup24hDeps {
  * Disparado por scheduler externo (`pg_cron`). Encerra conversas inativas
  * há 24h com uma mensagem de despedida.
  */
-export function buildFollowup24hRouter(deps: Followup24hDeps): Router {
-  const router = Router();
-  router.post("/", async (_req: Request, res: Response) => {
+export function buildFollowup24hRouter(
+  deps: Followup24hDeps,
+): Hono<{ Variables: LiaHttpVariables }> {
+  const r = new Hono<{ Variables: LiaHttpVariables }>();
+
+  r.post("/", async (c) => {
     try {
       const result = await processFollowup24h(deps.env);
-      res.status(200).json({ success: true, ...result });
+      return c.json({ success: true, ...result }, 200);
     } catch (error) {
       const errorMessage =
         error instanceof Error ? error.message : "Unknown error";
       console.error("❌ [followup-24h] Erro:", errorMessage);
-      res.status(500).json({ error: errorMessage });
+      return c.json({ error: errorMessage }, 500);
     }
   });
-  return router;
+
+  return r;
 }
