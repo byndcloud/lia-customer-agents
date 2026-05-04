@@ -99,14 +99,17 @@ export async function getOpenAtendimentoAgenteResponsavelRaw(
 /**
  * Finaliza atendimentos `em_andamento` da conversa como transferidos para a
  * fila humana (follow-up 24h com triagem inativa).
+ *
+ * @param notasFinalizacao Texto livre para `notas_finalizacao` (ex.: resumo da
+ *   situação gerado a partir do histórico).
  */
 export async function finalizarAtendimentosTransferidosFilaPorFollowup24hTriagem(
   conversaId: string,
+  notasFinalizacao: string,
   env?: EnvConfig,
 ): Promise<void> {
   const supabase = getSupabaseClient(env);
-  const notasFinalizacao =
-    "Follow-up 24h: conversa colocada em aguardando atendimento (triagem inativa).";
+  // `resultado` obedece ao CHECK do banco (valores como `transferido`, não texto livre).
 
   const { error } = await supabase
     .from("whatsapp_atendimentos")
@@ -114,7 +117,7 @@ export async function finalizarAtendimentosTransferidosFilaPorFollowup24hTriagem
       status_atendimento: "finalizado",
       finalizado_em: new Date().toISOString(),
       updated_at: new Date().toISOString(),
-      resultado: "Transferido por ausência de resposta e ser triagem.",
+      resultado: "transferido",
       notas_finalizacao: notasFinalizacao,
     })
     .eq("conversa_id", conversaId)

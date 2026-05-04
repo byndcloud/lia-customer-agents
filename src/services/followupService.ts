@@ -2,7 +2,11 @@ import { loadEnv, type EnvConfig } from "../config/env.js";
 import { getOpenAIClient } from "../config/openai-client.js";
 import { getSupabaseClient } from "../db/client.js";
 import { resolveAtendimentoIdForPersistedMessage } from "../db/atendimentos.js";
-import { saveChatbotMessage } from "../db/messages.js";
+import {
+  getConversationMessages,
+  saveChatbotMessage,
+  type WhatsappMensagem,
+} from "../db/messages.js";
 import { insertWhatsappConversationResponse } from "../db/responses.js";
 import {
   closeConversation,
@@ -70,20 +74,6 @@ Diretrizes de Conteúdo: Varie a abordagem, mas sempre pergunte se você (Lia) c
 Se a dúvida parecer resolvida, incentive uma confirmação simples (ex: "é só me avisar") para facilitar o fechamento.
 Exemplo de Tom: "Consegui resolver o que você precisava ou posso te ajudar com mais alguma coisa? 😊
 
-Regras de comportamento após a resposta do usuário:
-
-1. Se o usuário confirmar que o problema foi resolvido:
-   - Chamar a tool "finalizar_atendimento".
-
-2. Se o usuário indicar que o problema NÃO foi resolvido, e não fornecer o problema/contexto do que não foi resolvido. Deve-se perguntar para o usuário qual foi o problema que não foi resolvido. Por exemplo: "Com o que posso te ajudar?"
-
-3. Se após resposta do usuário explicando seu problema, for identificado que a solicitação está fora do escopo ou das capacidades das tools disponíveis 
-   (getLatelyProcess, getLastMovimentation, getMovimentationHistory, getPerson, etc.):
-   - Chamar a tool "unresolvedProblem". Não deve-se chamar a tool de transbordo nesse fluxo de encerramento ("transhipment"), deve-se chamar a tool "unresolvedProblem".
-
-4. Caso o usuário responda com uma nova dúvida ou continuação dentro do escopo suportado:
-   - Prosseguir normalmente com o atendimento, sem chamar nenhuma das tools acima.
-
 Siga essas regras de forma determinística.
 `;
 
@@ -96,15 +86,95 @@ Siga essas regras de forma determinística.
 
 const FOLLOWUP_24H_DEVELOPER_MSG = `O usuário está inativo há mais de 24 horas e a conversa será encerrada. Envie uma mensagem como essa "Como a nossa conversa parou por aqui, vou encerrar o atendimento. Se precisar de algo novo, é só me chamar! 😊"`;
 
+/** Notas internas para a fila humana: alinhado ao “RESUMO FINAL” da triagem trabalhista. */
+const FOLLOWUP_24H_TRIAGEM_NOTAS_DEVELOPER = `Você redige notas INTERNAS para o time humano (campo de finalização no CRM), em português.
+
+Contexto operacional (sempre verdadeiro neste caso):
+- A conversa estava em triagem automática com a assistente Lia.
+- Passaram mais de 24 horas sem nova mensagem do cliente.
+- O sistema vai colocar a conversa em fila de atendimento humano (não é encerramento com despedida ao cliente).
+
+Tarefa:
+1) Primeira linha EXATAMENTE assim (uma linha só):
+Transferência automática — follow-up 24h (triagem inativa, sem resposta do cliente).
+
+2) Linha em branco.
+
+3) Em seguida, um resumo da situação no MESMO ESPÍRITO do “RESUMO FINAL” da triagem trabalhista (preencha com base só no histórico abaixo; use “não informado” quando algo não aparecer):
+Nome: …
+Empresa: …
+Situação atual: …
+Tema principal: …
+
+Resumo do caso:
+(2 a 5 linhas objetivas com os fatos centrais)
+
+Provas mencionadas:
+…
+
+Leitura inicial para o advogado:
+- Viabilidade: …
+- Complexidade: …
+- Potencial de ganho: …
+- Urgência jurídica: …
+- Prioridade de atendimento: …
+
+Regras:
+- Não invente fatos; só deduza o que for razoavelmente implícito no histórico.
+- Não escreva mensagem ao cliente.
+- Seja conciso; evite repetir o histórico inteiro.`;
+
+const TRANSCRIPT_MAX_CHARS = 48_000;
+const TRANSCRIPT_MSG_SLICE = 2_800;
+
 /**
- * Gera mensagem de followup chamando direto a Responses API (encadeada com o
- * sem encadear `previous_response_id` (histórico vem do canal / banco).
+ * Monta transcrição cronológica para o modelo (últimas mensagens da conversa).
+ */
+function buildTranscriptForTriagemNotas(
+  messages: readonly WhatsappMensagem[],
+): string {
+  const chronological = [...messages].sort(
+    (a, b) =>
+      new Date(a.created_at).getTime() - new Date(b.created_at).getTime(),
+  );
+  const parts: string[] = [];
+  for (const m of chronological) {
+    const label =
+      m.remetente === "cliente"
+        ? "CLIENTE"
+        : m.remetente === "chatbot"
+          ? "LIA"
+          : "ATENDENTE";
+    const raw = (m.conteudo ?? "").trim();
+    if (!raw) {
+      parts.push(`[${label}] (${m.tipo_mensagem}, sem texto)`);
+      continue;
+    }
+    const slice =
+      raw.length > TRANSCRIPT_MSG_SLICE
+        ? `${raw.slice(0, TRANSCRIPT_MSG_SLICE)}…`
+        : raw;
+    parts.push(`[${label}] ${slice}`);
+  }
+  let joined = parts.join("\n\n");
+  if (joined.length > TRANSCRIPT_MAX_CHARS) {
+    joined =
+      "…(trecho inicial omitido por limite)\n\n" +
+      joined.slice(joined.length - TRANSCRIPT_MAX_CHARS);
+  }
+  return joined;
+}
+
+type ResponsesInputRole = "developer" | "user";
+
+/**
+ * Gera texto via Responses API (sem encadear previous_response_id).
  *
  * NOTE: usamos a Responses API e não o Agents SDK aqui porque o followup é
- * sempre uma instrução fixa do "developer" e não deve disparar handoffs/tools.
+ * instrução controlada e não deve disparar handoffs/tools.
  */
-async function gerarMensagemComResponsesApi(
-  developerMessage: string,
+async function gerarTextoComResponsesApi(
+  input: ReadonlyArray<{ role: ResponsesInputRole; content: string }>,
   env: EnvConfig,
 ): Promise<{
   responseContent: string;
@@ -115,7 +185,7 @@ async function gerarMensagemComResponsesApi(
 
   const requestBody: Record<string, unknown> = {
     model: env.aiModel,
-    input: [{ role: "developer", content: developerMessage }],
+    input: [...input],
   };
 
   const response = (await openai.responses.create(
@@ -135,6 +205,58 @@ async function gerarMensagemComResponsesApi(
     responseId: response.id,
     tokensUsed: response.usage?.total_tokens,
   };
+}
+
+async function gerarMensagemComResponsesApi(
+  developerMessage: string,
+  env: EnvConfig,
+): Promise<{
+  responseContent: string;
+  responseId: string;
+  tokensUsed?: number | undefined;
+}> {
+  return gerarTextoComResponsesApi(
+    [{ role: "developer", content: developerMessage }],
+    env,
+  );
+}
+
+const FOLLOWUP_24H_TRIAGEM_NOTAS_FALLBACK =
+  "Transferência automática — follow-up 24h (triagem inativa, sem resposta do cliente).\n\n" +
+  "Resumo não gerado automaticamente; consultar histórico da conversa no painel.";
+
+/** Gera notas_finalizacao para finalização por follow-up 24h em triagem. */
+async function gerarNotasFinalizacaoTriagemFollowup24h(
+  conversaId: string,
+  env: EnvConfig,
+): Promise<string> {
+  const recent = await getConversationMessages(conversaId, 100, env);
+  const transcript = buildTranscriptForTriagemNotas(recent);
+  if (!transcript.trim()) {
+    return FOLLOWUP_24H_TRIAGEM_NOTAS_FALLBACK;
+  }
+  try {
+    const { responseContent } = await gerarTextoComResponsesApi(
+      [
+        { role: "developer", content: FOLLOWUP_24H_TRIAGEM_NOTAS_DEVELOPER },
+        {
+          role: "user",
+          content: `Histórico da conversa (mais antigo primeiro):\n\n${transcript}`,
+        },
+      ],
+      env,
+    );
+    const trimmed = responseContent.trim();
+    if (trimmed.length > 0) {
+      return trimmed;
+    }
+  } catch (err) {
+    console.warn(
+      `⚠️ [followup-24h] Falha ao gerar notas de triagem (${conversaId}):`,
+      err,
+    );
+  }
+  return FOLLOWUP_24H_TRIAGEM_NOTAS_FALLBACK;
 }
 
 /**
@@ -337,8 +459,11 @@ export async function processFollowup24h(
 
       if (encaminharParaFilaTriagem) {
         try {
+          const notasTriagem =
+            await gerarNotasFinalizacaoTriagemFollowup24h(conversa.id, cfg);
           await finalizarAtendimentosTransferidosFilaPorFollowup24hTriagem(
             conversa.id,
+            notasTriagem,
             cfg,
           );
         } catch (atendimentoError) {
