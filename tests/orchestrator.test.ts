@@ -53,6 +53,26 @@ describe("buildOrchestratorAgent", () => {
     const orchestrator = buildOrchestratorAgent({ env, context });
     expect(orchestrator.model).toBe("gpt-test");
   });
+
+  it("resolve instruções com bloco de tom/vocabulário a partir de chatbot_ai_config", async () => {
+    const orchestrator = buildOrchestratorAgent({
+      env,
+      context,
+      fetchChatbotAiConfig: async () => ({
+        tom_voz: "energico",
+        vocabulario: "intermediario",
+        tipo_atualizacao: "publicacao",
+        palavras_chave_filtro: [],
+      }),
+    });
+    expect(typeof orchestrator.instructions).toBe("function");
+    const text = await (orchestrator.instructions as (rc: {
+      context: AgentRunContext;
+    }) => Promise<string>)({ context });
+    expect(text).toContain("## Personalização (tom de voz e vocabulário)");
+    expect(text).toContain("Enérgico, confiante e proativo");
+    expect(text).toContain("petição");
+  });
 });
 
 describe("buildOrchestratorInstructions", () => {

@@ -74,29 +74,59 @@ describe("TRIAGE_AGENT_SIMPLE_INSTRUCTIONS — modo simples (sem handoffs)", () 
   });
 });
 
-describe("buildTriageAgent", () => {
-  it("prepara as instruções com RECOMMENDED_PROMPT_PREFIX e mantém o corpo da triagem", () => {
-    const agent = buildTriageAgent({ env, context });
+const noChatbotAiConfig = async () => null;
 
-    expect(typeof agent.instructions).toBe("string");
-    const text = agent.instructions as string;
+describe("buildTriageAgent", () => {
+  it("prepara as instruções com RECOMMENDED_PROMPT_PREFIX e mantém o corpo da triagem", async () => {
+    const agent = buildTriageAgent({
+      env,
+      context,
+      fetchChatbotAiConfig: noChatbotAiConfig,
+    });
+
+    expect(typeof agent.instructions).toBe("function");
+    const text = await (agent.instructions as (rc: {
+      context: AgentRunContext;
+    }) => Promise<string>)({ context });
     expect(text.startsWith(RECOMMENDED_PROMPT_PREFIX)).toBe(true);
     expect(text).toContain("## Contexto temporal (âncora do atendimento)");
     expect(text).toContain(TRIAGE_AGENT_INSTRUCTIONS);
+    expect(text).toContain("## Personalização (tom de voz e vocabulário)");
+    expect(text).toContain("### ESTILO E FLUXO");
     expect(agent.handoffs.length).toBe(1);
     expect(agent.tools.length).toBe(1);
   });
 
-  it("modo sem handoffs usa TRIAGE_AGENT_SIMPLE_INSTRUCTIONS", () => {
+  it("modo sem handoffs usa TRIAGE_AGENT_SIMPLE_INSTRUCTIONS", async () => {
     const agent = buildTriageAgent({
       env,
       context,
       specialistHandoffs: false,
+      fetchChatbotAiConfig: noChatbotAiConfig,
     });
-    const text = agent.instructions as string;
+    const text = await (agent.instructions as (rc: {
+      context: AgentRunContext;
+    }) => Promise<string>)({ context });
     expect(text).toContain(TRIAGE_AGENT_SIMPLE_INSTRUCTIONS);
     expect(text).not.toContain("REGRA CRÍTICA: ORQUESTRAÇÃO PARA ESPECIALISTA");
     expect(agent.handoffs.length).toBe(0);
+  });
+
+  it("anexa tom empático quando fetch de chatbot_ai_config retorna tom_voz empatico", async () => {
+    const agent = buildTriageAgent({
+      env,
+      context,
+      fetchChatbotAiConfig: async () => ({
+        tom_voz: "empatico",
+        vocabulario: "leigo",
+        tipo_atualizacao: "publicacao",
+        palavras_chave_filtro: [],
+      }),
+    });
+    const text = await (agent.instructions as (rc: {
+      context: AgentRunContext;
+    }) => Promise<string>)({ context });
+    expect(text).toContain("Acolhedor, empático e compreensivo");
   });
 });
 
@@ -150,6 +180,7 @@ describe("triage trabalhista especialista", () => {
       env,
       context,
       fetchTriageSpecialistInstrucoes: async () => null,
+      fetchChatbotAiConfig: noChatbotAiConfig,
     });
     expect(typeof agent.instructions).toBe("function");
     const text = await (agent.instructions as (rc: {
@@ -165,11 +196,26 @@ describe("triage trabalhista especialista", () => {
       env,
       context,
       fetchTriageSpecialistInstrucoes: async () => "  peça CPF  ",
+      fetchChatbotAiConfig: noChatbotAiConfig,
     });
     const text = await (agent.instructions as (rc: {
       context: AgentRunContext;
     }) => Promise<string>)({ context });
     expect(text).toContain("## Instruções extras (definidas pelo escritório)");
     expect(text).toContain("peça CPF");
+  });
+
+  it("anexa bloco de personalização tom/vocabulário ao final", async () => {
+    const agent = buildTriageTrabalhistaAgent({
+      env,
+      context,
+      fetchTriageSpecialistInstrucoes: async () => null,
+      fetchChatbotAiConfig: noChatbotAiConfig,
+    });
+    const text = await (agent.instructions as (rc: {
+      context: AgentRunContext;
+    }) => Promise<string>)({ context });
+    expect(text).toContain("## Personalização (tom de voz e vocabulário)");
+    expect(text).toContain("### NÍVEL DE LINGUAGEM");
   });
 });

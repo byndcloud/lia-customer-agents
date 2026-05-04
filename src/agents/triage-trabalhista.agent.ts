@@ -4,6 +4,10 @@ import type { EnvConfig } from "../config/env.js";
 import { getTriageSpecialistInstrucoesCached } from "../db/triageSpecialistAgentsConfig.js";
 import { buildLegisMcpTool } from "../mcp/legis-mcp.js";
 import type { AgentRunContext } from "../types.js";
+import {
+  appendChatbotTomVocabToInstructions,
+  type FetchChatbotAiConfigFn,
+} from "./chatbot-instructions-appendix.js";
 import { buildAgentTemporalContextSection } from "./agent-temporal-context.js";
 import {
   TRIAGE_TRABALHISTA_AGENT_HANDOFF_DESCRIPTION,
@@ -23,6 +27,8 @@ export interface BuildTriageTrabalhistaAgentParams {
     nome: string,
     env: EnvConfig,
   ) => Promise<string | null>;
+  /** Ver `BuildOrchestratorAgentParams.fetchChatbotAiConfig`. */
+  readonly fetchChatbotAiConfig?: FetchChatbotAiConfigFn;
 }
 
 /**
@@ -55,7 +61,14 @@ export function buildTriageTrabalhistaAgent(
           ? await fetchInstrucoes(orgId, TRIAGE_TRABALHISTA_AGENT_NAME, params.env)
           : null;
       const body = buildTriageTrabalhistaInstructionsWithExtras(extras);
-      return `${RECOMMENDED_PROMPT_PREFIX}\n\n${buildAgentTemporalContextSection()}\n\n${body}`;
+      const prefix = `${RECOMMENDED_PROMPT_PREFIX}\n\n${buildAgentTemporalContextSection()}\n\n${body}`;
+      return appendChatbotTomVocabToInstructions(prefix, {
+        organizationId: ctx?.organizationId,
+        env: params.env,
+        ...(params.fetchChatbotAiConfig !== undefined
+          ? { fetchChatbotAiConfig: params.fetchChatbotAiConfig }
+          : {}),
+      });
     },
     model: params.env.aiModel,
     tools: [legisMcp],

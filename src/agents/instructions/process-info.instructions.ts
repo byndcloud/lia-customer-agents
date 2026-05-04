@@ -1,17 +1,14 @@
-import type {
-  ChatbotTipoAtualizacao,
-  ChatbotTom,
-  ChatbotVocabulario,
-} from "../../db/chatbotAiConfig.js";
+import type { ChatbotTipoAtualizacao } from "../../db/chatbotAiConfig.js";
+import { CHATBOT_DEFAULT_TOM_VOCAB_INSTRUCTIONS } from "./chatbot-ai-style-instructions.js";
 
 /**
  * Instruções do agente de Consulta de Informações Processuais.
  *
  * O texto base (persona + objetivo + regras de ouro + anti-alucinação) é
- * sempre incluído. Estilo, vocabulário, comunicação de atualizações e a
- * regra de transbordo são compostos dinamicamente por
- * `buildProcessInfoInstructions` em `process-info.personalization.ts`,
- * conforme `chatbot_ai_config` da organização e `calendarConnectionId`.
+ * sempre incluído. Tom/vocabulário vêm de `chatbot-ai-style-instructions.ts`;
+ * comunicação de atualizações, transbordo e `calendarConnectionId` entram via
+ * `buildProcessInfoInstructions` em `process-info.personalization.ts`
+ * (`chatbot_ai_config` da organização).
  */
 
 export const PROCESS_INFO_AGENT_NAME = "process_info";
@@ -147,57 +144,12 @@ Lembre-se: "não corresponde a nenhuma ferramenta" significa que **você verific
 `;
 
 /** Bloco de estilo/vocab/updates aplicado quando a org não tem config de IA. */
-export const PROCESS_INFO_DEFAULT_STYLE_INSTRUCTIONS = `
-### ESTILO E FLUXO
--   Tom: Formal, objetivo e claro. Use linguagem simples, sem "juridiquês".
--   Apresentação de Opções: Antes de listar opções numeradas, sempre introduza a lista com uma frase de transição humanizada.
-
-### NÍVEL DE LINGUAGEM
--   Use linguagem simples e acessível, sem termos técnicos jurídicos.
-
+export const PROCESS_INFO_DEFAULT_STYLE_INSTRUCTIONS =
+  CHATBOT_DEFAULT_TOM_VOCAB_INSTRUCTIONS +
+  `
 ### COMUNICAÇÃO DE ATUALIZAÇÕES
 -   Informe apenas sobre publicações oficiais no Diário de Justiça.
 `;
-
-const STYLE_INSTRUCTIONS: Record<ChatbotTom, string> = {
-  profissional: `
-### ESTILO E FLUXO
--   Tom: Formal, objetivo e claro. Use linguagem simples, sem "juridiquês".
--   Seja direto e profissional, evitando excessos de cordialidade.
--   Apresentação de Opções: Antes de listar opções numeradas, sempre introduza a lista com uma frase de transição humanizada. Evite chamadas robóticas como "Escolha uma das opções:". Em vez disso, pergunte algo como "Com o que mais posso te ajudar?" ou "Posso ajudar com mais alguma informação?" e então apresente a lista.
-`,
-  empatico: `
-### ESTILO E FLUXO
--   Tom: Acolhedor, empático e compreensivo. Demonstre cuidado genuíno.
--   Use frases que transmitam empatia.
--   Seja paciente e detalhista nas explicações.
--   Apresentação de Opções: Sempre introduza listas com frases calorosas como.
-`,
-  energico: `
-### ESTILO E FLUXO
--   Tom: Enérgico, confiante e proativo. Transmita dinamismo e eficiência.
--   Use frases assertivas e diretas.
--   Seja objetivo mas entusiasmado.
--   Apresentação de Opções: Introduza listas com energia.
-`,
-};
-
-const VOCABULARY_INSTRUCTIONS: Record<ChatbotVocabulario, string> = {
-  leigo: `
-### NÍVEL DE LINGUAGEM
--   Use SEMPRE linguagem simples e acessível, sem termos técnicos jurídicos.
--   Evite palavras como "petição inicial", "contestação", "réu", "autor".
--   Prefira: "documento inicial", "resposta", "parte contrária", "cliente".
--   Explique qualquer termo técnico que precise usar de forma clara e didática.
-`,
-  intermediario: `
-### NÍVEL DE LINGUAGEM
--   Você pode usar termos técnicos essenciais, mas mantenha a clareza.
--   Termos como "petição", "audiência", "sentença" são aceitáveis.
--   Evite juridiquês excessivo ou termos muito técnicos.
--   Equilibre profissionalismo com compreensibilidade.
-`,
-};
 
 const TRANSHIPMENT_MENU_INSTRUCTIONS = `
 ### REGRA ESPECIAL: Transbordo com Opção de Agendamento
@@ -227,18 +179,6 @@ Após o MCP gerar a pergunta, aguarde a resposta do usuário.
 
 **IMPORTANTE:** NUNCA envie { choice: "whatsapp" } ou { choice: "schedule" } na primeira chamada. Sempre chame transhipment sem argumentos primeiro para gerar a pergunta.
 `;
-
-/** Bloco de estilo/fluxo conforme `tom_voz` da config. */
-export function buildStyleInstructions(tom: ChatbotTom): string {
-  return STYLE_INSTRUCTIONS[tom];
-}
-
-/** Bloco de nível de linguagem conforme `vocabulario` da config. */
-export function buildVocabularyInstructions(
-  vocabulario: ChatbotVocabulario,
-): string {
-  return VOCABULARY_INSTRUCTIONS[vocabulario];
-}
 
 /**
  * Bloco de comunicação de atualizações conforme `tipo_atualizacao` +

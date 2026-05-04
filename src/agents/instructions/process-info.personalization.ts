@@ -6,11 +6,13 @@ import {
   setCachedInstructions,
 } from "./process-info.instructionsCache.js";
 import {
+  buildStyleInstructions,
+  buildVocabularyInstructions,
+} from "./chatbot-ai-style-instructions.js";
+import {
   PROCESS_INFO_BASE_INSTRUCTIONS,
   PROCESS_INFO_DEFAULT_STYLE_INSTRUCTIONS,
-  buildStyleInstructions,
   buildUpdateInstructions,
-  buildVocabularyInstructions,
   getTranshipmentMenuInstructions,
 } from "./process-info.instructions.js";
 
@@ -37,9 +39,10 @@ export interface BuildProcessInfoInstructionsParams {
  *
  * Estrutura final:
  *  1. `PROCESS_INFO_BASE_INSTRUCTIONS` (sempre).
- *  2. Estilo + vocabulário + comunicação de atualizações:
+ *  2. Estilo + vocabulário (`chatbot-ai-style-instructions.ts`) + comunicação
+ *     de atualizações:
  *     - sem config → `PROCESS_INFO_DEFAULT_STYLE_INSTRUCTIONS`
- *     - com config → blocos derivados de `tom_voz` / `vocabulario` /
+ *     - com config → `buildStyleInstructions` / `buildVocabularyInstructions` +
  *       `tipo_atualizacao` + `palavras_chave_filtro`.
  *  3. Bloco de transbordo (`getTranshipmentMenuInstructions()`) quando há
  *     `calendarConnectionId`.

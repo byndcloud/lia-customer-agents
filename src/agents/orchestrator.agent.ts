@@ -3,6 +3,10 @@ import { RECOMMENDED_PROMPT_PREFIX } from "@openai/agents-core/extensions";
 import type { EnvConfig } from "../config/env.js";
 import { buildLegisMcpTool } from "../mcp/legis-mcp.js";
 import type { AgentRunContext } from "../types.js";
+import {
+  appendChatbotTomVocabToInstructions,
+  type FetchChatbotAiConfigFn,
+} from "./chatbot-instructions-appendix.js";
 import { buildProcessInfoAgent } from "./process-info.agent.js";
 import { buildTriageAgent } from "./triage.agent.js";
 import { removeAllTools } from "@openai/agents-core/extensions";
@@ -144,6 +148,11 @@ export interface BuildOrchestratorAgentParams {
    * `whatsapp_numeros.triage_enabled` = false).
    */
   readonly triageSpecialistHandoffs?: boolean;
+  /**
+   * Resolver de `chatbot_ai_config` (tom + vocabulário nas instruções).
+   * Produção: omitir e usar `getChatbotAiConfig`.
+   */
+  readonly fetchChatbotAiConfig?: FetchChatbotAiConfigFn;
 }
 
 /**
@@ -158,6 +167,9 @@ export function buildOrchestratorAgent(params: BuildOrchestratorAgentParams) {
     env: params.env,
     context: params.context,
     specialistHandoffs: params.triageSpecialistHandoffs !== false,
+    ...(params.fetchChatbotAiConfig !== undefined
+      ? { fetchChatbotAiConfig: params.fetchChatbotAiConfig }
+      : {}),
   });
   const processInfoAgent = buildProcessInfoAgent({
     env: params.env,
@@ -172,10 +184,17 @@ export function buildOrchestratorAgent(params: BuildOrchestratorAgentParams) {
 
   return Agent.create({
     name: ORCHESTRATOR_AGENT_NAME,
-    instructions: async (runContext) =>
-      buildOrchestratorInstructions(
-        runContext.context as AgentRunContext,
-      ),
+    instructions: async (runContext) => {
+      const ctx = runContext.context as AgentRunContext;
+      const base = buildOrchestratorInstructions(ctx);
+      return appendChatbotTomVocabToInstructions(base, {
+        organizationId: ctx.organizationId,
+        env: params.env,
+        ...(params.fetchChatbotAiConfig !== undefined
+          ? { fetchChatbotAiConfig: params.fetchChatbotAiConfig }
+          : {}),
+      });
+    },
     model: params.env.aiModel,
     handoffs: [
       handoff(processInfoAgent, {
