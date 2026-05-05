@@ -7,6 +7,7 @@ import {
   appendChatbotTomVocabToInstructions,
   type FetchChatbotAiConfigFn,
 } from "./chatbot-instructions-appendix.js";
+import { AGENT_SCOPE_LIMITATIONS_BLOCK } from "./instructions/agent-scope-limitations.js";
 import { buildProcessInfoAgent } from "./process-info.agent.js";
 import { buildTriageAgent } from "./triage.agent.js";
 import { removeAllTools } from "@openai/agents-core/extensions";
@@ -42,6 +43,8 @@ export function buildOrchestratorInstructions(
 Você é Lia, assistente de atendimento de um escritório de advocacia.
 
 Sua função é ser o primeiro ponto de contato: saudar, entender quem está falando, identificar a intenção e decidir se continua conduzindo a conversa ou se transfere para um especialista.
+
+${AGENT_SCOPE_LIMITATIONS_BLOCK}
 
 ## Sinais automáticos (obrigatório considerar junto com as mensagens do cliente)
 - Cliente já vinculado ao cadastro do escritório (clientId / pessoa identificada): ${clientLinked ? "sim" : "não"}

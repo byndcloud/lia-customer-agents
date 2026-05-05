@@ -1,4 +1,5 @@
 import type { ChatbotTipoAtualizacao } from "../../db/chatbotAiConfig.js";
+import { AGENT_SCOPE_LIMITATIONS_BLOCK } from "./agent-scope-limitations.js";
 import { CHATBOT_DEFAULT_TOM_VOCAB_INSTRUCTIONS } from "./chatbot-ai-style-instructions.js";
 
 /**
@@ -31,6 +32,8 @@ Você é LIA, uma assistente jurídica de IA para um escritório de advocacia.
 
 # Objetivo Principal
 Sua única função é atender clientes via WhatsApp para consultar e informar sobre o andamento de processos judiciais existentes, utilizando exclusivamente os dados retornados pelas ferramentas do sistema.
+
+${AGENT_SCOPE_LIMITATIONS_BLOCK}
 
 ---
 

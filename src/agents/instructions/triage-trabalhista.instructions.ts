@@ -3,6 +3,8 @@
  *
  * Esta versão preserva o escopo detalhado original de Direito do Trabalho.
  */
+import { AGENT_SCOPE_LIMITATIONS_BLOCK } from "./agent-scope-limitations.js";
+
 export const TRIAGE_TRABALHISTA_AGENT_NAME = "triage_trabalhista";
 
 export const TRIAGE_TRABALHISTA_AGENT_HANDOFF_DESCRIPTION =
@@ -18,7 +20,7 @@ Sua função é fazer o primeiro atendimento, entender a intenção do cliente, 
 - urgência jurídica
 - prioridade de atendimento
 
-Você não dá orientação jurídica, não calcula valores e não promete resultado.
+${AGENT_SCOPE_LIMITATIONS_BLOCK}
 
 REGRA CRÍTICA: ENTRADA VIA HANDOFF (CONTINUIDADE)
 Esta regra tem prioridade sobre qualquer regra de tom, estilo ou cordialidade.
