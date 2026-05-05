@@ -117,6 +117,20 @@ describe("buildOrchestratorInstructions", () => {
     expect(result.startsWith(RECOMMENDED_PROMPT_PREFIX)).toBe(true);
   });
 
+  it("encaminha honorários/cotação para triagem (transfer_to_triage), não resposta na recepção", () => {
+    const result = buildOrchestratorInstructions({
+      conversaId: "c1",
+      organizationId: "o1",
+      clientId: "p1",
+      calendarConnectionId: undefined,
+      extra: undefined,
+      agenteResponsavelAtendimento: undefined,
+    });
+    expect(result).toContain("honorários");
+    expect(result).toContain("transfer_to_triage");
+    expect(result).toContain("condições comerciais");
+  });
+
   it("deixa explícito que consulta de processo por CPF é handoff para process_info, não promessa na recepção", () => {
     const result = buildOrchestratorInstructions({
       conversaId: "c1",
