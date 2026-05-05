@@ -7,7 +7,6 @@ import {
   saveChatbotMessage,
   type WhatsappMensagem,
 } from "../db/messages.js";
-import { insertWhatsappConversationResponse } from "../db/responses.js";
 import {
   closeConversation,
   getConversationStatus,
@@ -449,7 +448,7 @@ export async function processFollowup30min(
         ? FOLLOWUP_30MIN_DEVELOPER_MSG_TRIAGE
         : FOLLOWUP_30MIN_DEVELOPER_MSG;
 
-      const { responseContent, responseId, tokensUsed } =
+      const { responseContent } =
         await gerarMensagemComResponsesApi(developerMsg30, cfg);
 
       const atendimentoId = await resolveAtendimentoIdForPersistedMessage(
@@ -463,23 +462,13 @@ export async function processFollowup30min(
         cfg,
       );
 
-      const mensagemData = await saveChatbotMessage(
+      await saveChatbotMessage(
         conversa.id,
         responseContent,
         "texto",
         undefined,
         cfg,
         atendimentoId,
-      );
-
-      await insertWhatsappConversationResponse(
-        {
-          responseId,
-          whatsappMensagemId: mensagemData.id,
-          modelUsed: cfg.aiModel,
-          tokensUsed,
-        },
-        cfg,
       );
 
       const { instancia, error: instanceError } =
@@ -637,23 +626,13 @@ export async function processFollowup24h(
           cfg,
         );
 
-        const mensagemData = await saveChatbotMessage(
+        await saveChatbotMessage(
           conversa.id,
           responseContent,
           "texto",
           undefined,
           cfg,
           atendimentoId24,
-        );
-
-        await insertWhatsappConversationResponse(
-          {
-            responseId: generated.responseId,
-            whatsappMensagemId: mensagemData.id,
-            modelUsed: cfg.aiModel,
-            tokensUsed: generated.tokensUsed,
-          },
-          cfg,
         );
 
         const { instancia, error: instanceError } =

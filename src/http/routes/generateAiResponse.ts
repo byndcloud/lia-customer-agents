@@ -15,7 +15,6 @@ import {
   saveChatbotMessage,
   type WhatsappMensagem,
 } from "../../db/messages.js";
-import { insertWhatsappConversationResponse } from "../../db/responses.js";
 import { transcribeAudioFromStorage } from "../../services/audioTranscription.js";
 import { shouldInterceptMessage } from "../../services/conversationFlowInterceptor.js";
 import { sendEvolutionMessage } from "../../services/evolutionApi.js";
@@ -402,43 +401,6 @@ async function handleGenerate(
       conversaId,
       mensagemId: mensagemData.id,
     });
-
-    if (responseId) {
-      const insertRpcStarted = Date.now();
-      logGenerateAi("generate_ai_insert_response_start", {
-        conversaId,
-        mensagemId: mensagemData.id,
-        responseId,
-      });
-      await insertWhatsappConversationResponse(
-        {
-          responseId,
-          whatsappMensagemId: mensagemData.id,
-          modelUsed: env.aiModel,
-          tokensUsed,
-        },
-        env,
-      );
-      const insertRpcMs = Date.now() - insertRpcStarted;
-      logGenerateAi("generate_ai_insert_response_done", {
-        conversaId,
-        mensagemId: mensagemData.id,
-        durationMs: insertRpcMs,
-      });
-      if (insertRpcMs > 3000) {
-        logGenerateAi(
-          "generate_ai_insert_response_slow",
-          { conversaId, mensagemId: mensagemData.id, durationMs: insertRpcMs },
-          "warn",
-        );
-      }
-    } else {
-      logGenerateAi("generate_ai_insert_response_skipped", {
-        conversaId,
-        mensagemId: mensagemData.id,
-        reason: "no_response_id",
-      });
-    }
 
     logGenerateAi("generate_ai_resolve_instance_start", {
       conversaId,
