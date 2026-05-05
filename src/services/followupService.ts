@@ -56,6 +56,108 @@ interface ConversaInativa24h {
   ultimo_response_id: string | null;
 }
 
+/**
+ * GATE PROVISÓRIO DE FOLLOW-UP POR ORGANIZAÇÃO
+ * --------------------------------------------
+ * Mantém as rotas de follow-up ativas apenas para orgs com:
+ * - módulo `legis_atende`
+ * - `settings.feature_flags.triagem_inteligente === true`
+ *
+ * Para remover no futuro, basta:
+ * 1) definir a constante abaixo como `false`, ou
+ * 2) apagar este bloco e os `if` de skip nos loops de follow-up.
+ */
+const FOLLOWUP_TRIAGEM_INTELIGENTE_GATE_ENABLED = true;
+const FOLLOWUP_MODULE_IDENTIFIER = "legis_atende";
+
+type OrganizationModuleRowDirect = {
+  organization_id: string | null;
+  settings: unknown;
+  identifier?: string | null;
+};
+
+type OrganizationModuleRowJoined = {
+  organization_id: string | null;
+  settings: unknown;
+  modules?: { identifier?: string | null } | Array<{ identifier?: string | null }> | null;
+};
+
+function hasTriagemInteligenteFlag(settings: unknown): boolean {
+  if (!settings || typeof settings !== "object") return false;
+  const featureFlags = (settings as { feature_flags?: unknown }).feature_flags;
+  if (!featureFlags || typeof featureFlags !== "object") return false;
+  return (
+    (featureFlags as { triagem_inteligente?: unknown }).triagem_inteligente ===
+    true
+  );
+}
+
+async function getFollowupEligibleOrganizationIds(
+  cfg: EnvConfig,
+): Promise<Set<string>> {
+  if (!FOLLOWUP_TRIAGEM_INTELIGENTE_GATE_ENABLED) {
+    return new Set<string>();
+  }
+
+  const supabase = getSupabaseClient(cfg);
+
+  // Tentativa 1: `identifier` direto em `organization_modules`.
+  const direct = await supabase
+    .from("organization_modules")
+    .select("organization_id, settings, identifier")
+    .eq("identifier", FOLLOWUP_MODULE_IDENTIFIER);
+
+  if (!direct.error) {
+    const rows = (direct.data as OrganizationModuleRowDirect[] | null) ?? [];
+    return new Set(
+      rows
+        .filter(
+          (row) =>
+            typeof row.organization_id === "string" &&
+            row.organization_id.length > 0 &&
+            hasTriagemInteligenteFlag(row.settings),
+        )
+        .map((row) => row.organization_id as string),
+    );
+  }
+
+  // Tentativa 2: join com `modules.identifier`.
+  const joined = await supabase
+    .from("organization_modules")
+    .select("organization_id, settings, modules!inner(identifier)")
+    .eq("modules.identifier", FOLLOWUP_MODULE_IDENTIFIER);
+
+  if (joined.error) {
+    console.warn(
+      "⚠️ [followup] Não foi possível resolver gate provisório por organization_modules:",
+      joined.error.message,
+    );
+    // Fail-closed: sem conseguir validar a flag, não processa follow-up.
+    return new Set<string>();
+  }
+
+  const rows = (joined.data as OrganizationModuleRowJoined[] | null) ?? [];
+  return new Set(
+    rows
+      .filter((row) => {
+        if (
+          typeof row.organization_id !== "string" ||
+          row.organization_id.length === 0
+        ) {
+          return false;
+        }
+        const moduleRef = Array.isArray(row.modules)
+          ? row.modules[0]
+          : row.modules;
+        return (
+          moduleRef?.identifier === FOLLOWUP_MODULE_IDENTIFIER &&
+          hasTriagemInteligenteFlag(row.settings)
+        );
+      })
+      .map((row) => row.organization_id as string),
+  );
+}
+
 export interface FollowupResult {
   conversas_encontradas: number;
   processadas: number;
@@ -278,6 +380,7 @@ export async function processFollowup30min(
   if (error) throw error;
 
   const lista = (data as ConversaInativa30min[]) ?? [];
+  const eligibleOrgIds = await getFollowupEligibleOrganizationIds(cfg);
   const result: FollowupResult = {
     conversas_encontradas: lista.length,
     processadas: 0,
@@ -286,6 +389,17 @@ export async function processFollowup30min(
   };
 
   for (const conversa of lista) {
+    if (
+      FOLLOWUP_TRIAGEM_INTELIGENTE_GATE_ENABLED &&
+      !eligibleOrgIds.has(conversa.organization_id)
+    ) {
+      result.detalhes.push({
+        conversa_id: conversa.id,
+        status: "pulado_feature_flag_triagem_inteligente",
+      });
+      continue;
+    }
+
     let inactiveSinceUpdated = false;
 
     const marcarInactiveSince = async () => {
@@ -441,6 +555,7 @@ export async function processFollowup24h(
   if (error) throw error;
 
   const lista = (data as ConversaInativa24h[]) ?? [];
+  const eligibleOrgIds = await getFollowupEligibleOrganizationIds(cfg);
   const result: FollowupResult = {
     conversas_encontradas: lista.length,
     processadas: 0,
@@ -449,6 +564,17 @@ export async function processFollowup24h(
   };
 
   for (const conversa of lista) {
+    if (
+      FOLLOWUP_TRIAGEM_INTELIGENTE_GATE_ENABLED &&
+      !eligibleOrgIds.has(conversa.organization_id)
+    ) {
+      result.detalhes.push({
+        conversa_id: conversa.id,
+        status: "pulado_feature_flag_triagem_inteligente",
+      });
+      continue;
+    }
+
     try {
       const agenteRaw = await getOpenAtendimentoAgenteResponsavelRaw(
         conversa.id,

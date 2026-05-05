@@ -208,6 +208,8 @@ export async function hasClienteMensagemStrictlyAfter(
     .limit(1)
     .maybeSingle<{ id: string }>();
 
+  console.log("hasClienteMensagemStrictlyAfter", data);
+
   if (error) throw error;
   return data != null;
 }
