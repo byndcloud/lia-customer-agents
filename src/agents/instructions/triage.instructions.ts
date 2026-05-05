@@ -76,7 +76,7 @@ Se o cliente responder de forma ambígua, como:
 - "ss"
 - "blz"
 
-Assuma que pode encaminhar agora para o advogado.
+Assuma que pode encaminhar agora para o advogado pelo whatsapp.
 
 ENCERRAMENTO COM ENCAMINHAMENTO
 Depois do aceite do cliente ao encaminhamento:
