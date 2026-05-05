@@ -23,7 +23,7 @@ afterEach(() => {
 const TRANSHIPMENT_HEADING = "### REGRA ESPECIAL: Transbordo com Opção de Agendamento";
 
 const PROCESS_INFO_CLIENT_UNLINKED_SECTION = `## Sinal do sistema: cliente ainda não vinculado (sem clientId)
-Não há **pessoa vinculada** ao atendimento neste run. Se o cliente pedir "meu processo" sem ter informado CPF/CNPJ confiável na conversa, você pode precisar de \`cpf_cnpj\` em **getLatelyProcess** após tentar \`{}\` se a tool/documentação indicar insuficiência — peça **só** o documento, uma pergunta curta, sem exigir tribunal/vara.`;
+Não há **pessoa vinculada** ao atendimento neste run. Siga **IDENTIFICAÇÃO PARA CONSULTA PROCESSUAL** nas instruções base: **não** pergunte se é cliente ou primeiro contato. Informe que não foi encontrado cadastro com o número de contato (WhatsApp) usado e peça CPF ou CNPJ para \`getPerson\` quando aplicável; depois \`getLatelyProcess\` com \`cpf_cnpj\` se necessário. **É proibido** exigir tribunal, vara ou cidade como condição para buscar processo.`;
 
 function makeConfig(overrides: Partial<ChatbotAiConfig> = {}): ChatbotAiConfig {
   return {

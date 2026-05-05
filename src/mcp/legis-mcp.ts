@@ -22,8 +22,9 @@ export interface BuildLegisMcpToolParams {
   readonly context: AgentRunContext;
   /**
    * Restringe quais tools do MCP o agente enxerga. Quando omitido, o agente
-   * enxerga todas as tools expostas pelo servidor. Útil para orquestrador
-   * receber apenas `getPerson`, enquanto `process_info` tem acesso total.
+   * enxerga todas as tools expostas pelo servidor. Útil para o orquestrador
+   * receber só transbordo/encerramento, enquanto `process_info` tem acesso total
+   * (inclui `getPerson`, consultas de processo, etc.).
    */
   readonly allowedTools?: ReadonlyArray<string>;
 }
