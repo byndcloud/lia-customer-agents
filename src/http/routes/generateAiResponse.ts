@@ -404,6 +404,11 @@ async function handleGenerate(
     });
 
     if (responseId) {
+      logGenerateAi("generate_ai_insert_response_start", {
+        conversaId,
+        mensagemId: mensagemData.id,
+        responseId,
+      });
       await insertWhatsappConversationResponse(
         {
           responseId,
@@ -413,16 +418,40 @@ async function handleGenerate(
         },
         env,
       );
+      logGenerateAi("generate_ai_insert_response_done", {
+        conversaId,
+        mensagemId: mensagemData.id,
+      });
+    } else {
+      logGenerateAi("generate_ai_insert_response_skipped", {
+        conversaId,
+        mensagemId: mensagemData.id,
+        reason: "no_response_id",
+      });
     }
 
+    logGenerateAi("generate_ai_resolve_instance_start", {
+      conversaId,
+      instanciaProvided: Boolean(instancia),
+    });
     const { instancia: resolvedInstancia, error: instanceError } =
       await resolveWhatsAppInstance({ instancia, conversaId }, env);
 
     if (instanceError) {
+      logGenerateAi(
+        "generate_ai_resolve_instance_failed",
+        { conversaId, error: instanceError },
+        "warn",
+      );
       const statusCode =
         instanceError === "Conversation not found" ? 404 : 409;
       return c.json({ error: instanceError }, statusCode);
     }
+
+    logGenerateAi("generate_ai_resolve_instance_done", {
+      conversaId,
+      instancia: resolvedInstancia,
+    });
 
     if (numeroWhatsapp) {
       logGenerateAi("generate_ai_evolution_send", {
@@ -437,6 +466,10 @@ async function handleGenerate(
         responseContent,
         env,
       );
+      logGenerateAi("generate_ai_evolution_done", {
+        conversaId,
+        instancia: resolvedInstancia,
+      });
     } else {
       logGenerateAi(
         "generate_ai_evolution_skipped",
