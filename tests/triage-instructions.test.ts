@@ -35,10 +35,10 @@ describe("TRIAGE_AGENT_INSTRUCTIONS — modo especialista (com handoffs)", () =>
     const orchIdx = TRIAGE_AGENT_INSTRUCTIONS.indexOf(
       "REGRA CRÍTICA: ORQUESTRAÇÃO PARA ESPECIALISTA",
     );
-    const centralRulesIdx = TRIAGE_AGENT_INSTRUCTIONS.indexOf("REGRAS CENTRAIS");
+    const afterOrchIdx = TRIAGE_AGENT_INSTRUCTIONS.indexOf("ESCOPO");
 
     expect(orchIdx).toBeGreaterThan(0);
-    expect(centralRulesIdx).toBeGreaterThan(orchIdx);
+    expect(afterOrchIdx).toBeGreaterThan(orchIdx);
   });
 
   it("lista aberturas proibidas explícitas no modo simples (texto completo)", () => {
