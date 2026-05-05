@@ -404,6 +404,7 @@ async function handleGenerate(
     });
 
     if (responseId) {
+      const insertRpcStarted = Date.now();
       logGenerateAi("generate_ai_insert_response_start", {
         conversaId,
         mensagemId: mensagemData.id,
@@ -418,10 +419,19 @@ async function handleGenerate(
         },
         env,
       );
+      const insertRpcMs = Date.now() - insertRpcStarted;
       logGenerateAi("generate_ai_insert_response_done", {
         conversaId,
         mensagemId: mensagemData.id,
+        durationMs: insertRpcMs,
       });
+      if (insertRpcMs > 3000) {
+        logGenerateAi(
+          "generate_ai_insert_response_slow",
+          { conversaId, mensagemId: mensagemData.id, durationMs: insertRpcMs },
+          "warn",
+        );
+      }
     } else {
       logGenerateAi("generate_ai_insert_response_skipped", {
         conversaId,
@@ -465,6 +475,12 @@ async function handleGenerate(
         numeroWhatsapp,
         responseContent,
         env,
+        {
+          conversaId,
+          mensagemId: mensagemData.id,
+          atendimentoId: serviceAtendimento.atendimentoId,
+          organizacaoId: organizacaoId ?? null,
+        },
       );
       logGenerateAi("generate_ai_evolution_done", {
         conversaId,

@@ -24,14 +24,58 @@ function getApiKey(env: EnvConfig): string {
   return env.evolutionApiKey;
 }
 
+function evolutionPathFromUrl(url: string): string {
+  try {
+    return new URL(url).pathname;
+  } catch {
+    return url;
+  }
+}
+
+/** Uma linha JSON para o mesmo filtro de logs do `generate_ai_*`. */
+function logEvolution(
+  event: string,
+  fields: Record<string, unknown>,
+  level: "info" | "warn" = "info",
+): void {
+  const line = JSON.stringify({ level, event, ...fields });
+  if (level === "warn") {
+    console.warn(line);
+  } else {
+    console.log(line);
+  }
+}
+
+function evolutionLogFields(
+  trace: Record<string, unknown> | undefined,
+  fields: Record<string, unknown>,
+): Record<string, unknown> {
+  return { ...(trace ?? {}), ...fields };
+}
+
 async function makeEvolutionApiCall(
   url: string,
   options: RequestInit,
   apiKey: string,
   retries: number = 2,
+  trace?: Record<string, unknown>,
 ): Promise<Response> {
-  for (let attempt = 1; attempt <= retries + 1; attempt++) {
+  const method = (options.method ?? "GET").toUpperCase();
+  const pathHint = evolutionPathFromUrl(url);
+  const maxAttempts = retries + 1;
+
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
     try {
+      logEvolution(
+        "evolution_api_request_start",
+        evolutionLogFields(trace, {
+          path: pathHint,
+          method,
+          attempt,
+          maxAttempts,
+        }),
+      );
+
       const response = await fetch(url, {
         ...options,
         headers: {
@@ -43,25 +87,71 @@ async function makeEvolutionApiCall(
 
       if (!response.ok) {
         const errorText = await response.text();
-        if (
+        const willRetry =
           (response.status >= 500 || response.status === 0) &&
-          attempt <= retries
-        ) {
+          attempt <= retries;
+
+        logEvolution(
+          willRetry
+            ? "evolution_api_http_error_will_retry"
+            : "evolution_api_http_error",
+          evolutionLogFields(trace, {
+            path: pathHint,
+            method,
+            status: response.status,
+            attempt,
+            maxAttempts,
+            bodyPreview: errorText.slice(0, 500),
+            willRetry,
+          }),
+          "warn",
+        );
+
+        if (willRetry) {
           await new Promise((resolve) => setTimeout(resolve, attempt * 1000));
           continue;
         }
         throw new Error(
-          `Evolution API returned ${response.status}: ${errorText}`,
+          `Evolution API returned ${response.status} ${method} ${pathHint}: ${errorText}`,
         );
       }
+
+      logEvolution(
+        "evolution_api_response_ok",
+        evolutionLogFields(trace, {
+          path: pathHint,
+          method,
+          status: response.status,
+          attempt,
+        }),
+      );
 
       return response;
     } catch (error) {
       const isLast = attempt > retries;
+      /** Erros HTTP já tratados acima; não retentar no `catch`. */
+      if (
+        error instanceof Error &&
+        error.message.startsWith("Evolution API returned ")
+      ) {
+        throw error;
+      }
       if (
         error instanceof TypeError &&
         error.message.includes("fetch")
       ) {
+        logEvolution(
+          "evolution_api_network_error",
+          evolutionLogFields(trace, {
+            path: pathHint,
+            method,
+            attempt,
+            maxAttempts,
+            message: error.message,
+            willRetry: !isLast,
+          }),
+          "warn",
+        );
         if (!isLast) {
           await new Promise((resolve) => setTimeout(resolve, attempt * 1000));
           continue;
@@ -70,6 +160,17 @@ async function makeEvolutionApiCall(
       }
 
       if (isLast) throw error;
+      logEvolution(
+        "evolution_api_throw_will_retry",
+        evolutionLogFields(trace, {
+          path: pathHint,
+          method,
+          attempt,
+          maxAttempts,
+          message: error instanceof Error ? error.message : String(error),
+        }),
+        "warn",
+      );
       await new Promise((resolve) => setTimeout(resolve, attempt * 1000));
     }
   }
@@ -112,6 +213,8 @@ export async function sendEvolutionMessage(
   number: string,
   text: string,
   env?: EnvConfig,
+  /** Campos opcionais (ex.: `conversaId`) para correlacionar logs com `/generate-ai-response`. */
+  trace?: Record<string, unknown>,
 ): Promise<unknown> {
   const cfg = env ?? loadEnv();
   const url = `${getBaseUrl(cfg)}/message/sendText/${instance}`;
@@ -119,6 +222,8 @@ export async function sendEvolutionMessage(
     url,
     { method: "POST", body: JSON.stringify({ number, text }) },
     getApiKey(cfg),
+    2,
+    trace,
   );
   return response.json();
 }

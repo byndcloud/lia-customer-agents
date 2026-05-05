@@ -504,6 +504,10 @@ export async function processFollowup30min(
           conversa.numero_whatsapp,
           responseContent,
           cfg,
+          {
+            conversaId: conversa.id,
+            source: "followup_30min",
+          },
         );
       } catch (evolutionError) {
         console.warn(
@@ -662,6 +666,10 @@ export async function processFollowup24h(
               conversa.numero_whatsapp,
               responseContent,
               cfg,
+              {
+                conversaId: conversa.id,
+                source: "followup_24h",
+              },
             );
           } catch (evolutionError) {
             console.error(

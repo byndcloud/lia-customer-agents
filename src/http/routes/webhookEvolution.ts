@@ -574,7 +574,10 @@ async function sendAndStoreAutoReply(
   env: EnvConfig,
 ): Promise<void> {
   try {
-    await sendEvolutionMessage(instanceName, phoneNumber, message, env);
+    await sendEvolutionMessage(instanceName, phoneNumber, message, env, {
+      conversaId: conversa.id,
+      source: "webhook_evolution_auto_reply",
+    });
     const aid = await resolveAtendimentoIdForPersistedMessage(
       {
         id: conversa.id,
