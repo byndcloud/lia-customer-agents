@@ -128,6 +128,25 @@ describe("buildTriageAgent", () => {
     expect(agent.handoffs.length).toBe(0);
   });
 
+  it("sem handoffs permanece em TRIAGE_AGENT_SIMPLE mesmo com especialistas na lista (ex.: não cliente + triage_enabled=false no runAgents)", async () => {
+    const agent = buildTriageAgent({
+      env,
+      context,
+      specialistHandoffs: false,
+      activeTriageSpecialists: [
+        { areaSlug: "trabalhista", agentName: "trabalhista" },
+        { areaSlug: "criminal", agentName: "criminal" },
+      ],
+      fetchChatbotAiConfig: noChatbotAiConfig,
+    });
+    const text = await (agent.instructions as (rc: {
+      context: AgentRunContext;
+    }) => Promise<string>)({ context });
+    expect(text).toContain(TRIAGE_AGENT_SIMPLE_INSTRUCTIONS);
+    expect(text).not.toContain("REGRA CRÍTICA: ORQUESTRAÇÃO PARA ESPECIALISTA");
+    expect(agent.handoffs.length).toBe(0);
+  });
+
   it("com vários especialistas ativos, registra um handoff por área", () => {
     const multi: ActiveTriageSpecialistRow[] = [
       { areaSlug: "trabalhista", agentName: "trabalhista" },

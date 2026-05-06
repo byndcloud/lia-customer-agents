@@ -410,6 +410,12 @@ export async function runAgents(
 
   const hasSpecialistRows = activeTriageSpecialists.length > 0;
 
+  /**
+   * Handoffs da triagem central → especialistas por área:
+   * - **Com `clientId`:** só depende de haver linhas ativas em `triage_specialist_agents_config`
+   *   (`triage_enabled` da instância **não** restringe).
+   * - **Sem `clientId`:** exige `whatsapp_numeros.triage_enabled` **e** linhas ativas na tabela.
+   */
   const triageSpecialistHandoffs = isClient
     ? hasSpecialistRows
     : triageEnabled && hasSpecialistRows;

@@ -260,9 +260,12 @@ Resumo do caso:
 export const TRIAGE_AGENT_INSTRUCTIONS = buildTriageAgentInstructionsWithSpecialists([]);
 
 /**
- * Corpo de instruções da triagem: modo com handoffs para especialistas vs. não.
+ * Corpo de instruções da triagem (sem prefixo temporal nem tom do chatbot).
  *
- * @param specialistHandoffs quando `true`, usa a lista de especialistas passada; se omitida ou vazia, equivale a {@link TRIAGE_AGENT_INSTRUCTIONS} (sem handoffs de especialista).
+ * - `specialistHandoffs === false` → sempre {@link TRIAGE_AGENT_SIMPLE_INSTRUCTIONS}.
+ * - `specialistHandoffs === true` com lista vazia ou omitida → {@link TRIAGE_AGENT_INSTRUCTIONS}
+ *   (placeholder exportado; em produção `buildTriageAgent` usa lista explícita ou SIMPLE).
+ * - `specialistHandoffs === true` com lista não vazia → {@link buildTriageAgentInstructionsWithSpecialists}.
  */
 export function buildTriageAgentInstructions(
   specialistHandoffs: boolean,

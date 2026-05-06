@@ -14,6 +14,16 @@ export type FetchChatbotAiConfigFn = (
   env: EnvConfig,
 ) => Promise<ChatbotAiConfig | null>;
 
+/** Repassa `fetchChatbotAiConfig` injetado em testes, ou omite para usar o default do módulo. */
+export function pickOptionalFetchChatbotOptions(
+  fetchChatbotAiConfig: FetchChatbotAiConfigFn | undefined,
+): { fetchChatbotAiConfig?: FetchChatbotAiConfigFn } {
+  if (fetchChatbotAiConfig === undefined) {
+    return {};
+  }
+  return { fetchChatbotAiConfig };
+}
+
 /**
  * Resolve `chatbot_ai_config` e anexa o bloco de tom + vocabulário ao final
  * das instruções (orquestrador, triagem).

@@ -1,17 +1,20 @@
-import { Agent, handoff } from "@openai/agents";
-import { RECOMMENDED_PROMPT_PREFIX } from "@openai/agents-core/extensions";
+import { Agent, handoff, RunContext } from "@openai/agents";
+import {
+  RECOMMENDED_PROMPT_PREFIX,
+  removeAllTools,
+} from "@openai/agents-core/extensions";
 import type { EnvConfig } from "../config/env.js";
 import type { ActiveTriageSpecialistRow } from "../db/triageSpecialistAgentsConfig.js";
 import { buildLegisMcpTool } from "../mcp/legis-mcp.js";
 import type { AgentRunContext } from "../types.js";
 import {
   appendChatbotTomVocabToInstructions,
+  pickOptionalFetchChatbotOptions,
   type FetchChatbotAiConfigFn,
 } from "./chatbot-instructions-appendix.js";
 import { AGENT_SCOPE_LIMITATIONS_BLOCK } from "./instructions/agent-scope-limitations.js";
 import { buildProcessInfoAgent } from "./process-info.agent.js";
 import { buildTriageAgent } from "./triage.agent.js";
-import { removeAllTools } from "@openai/agents-core/extensions";
 
 export const ORCHESTRATOR_AGENT_NAME = "orchestrator";
 
@@ -21,7 +24,9 @@ export const ORCHESTRATOR_AGENT_NAME = "orchestrator";
  * `process_info` quando o fluxo for consulta processual sem `clientId`.
  */
 export const ORCHESTRATOR_ALLOWED_MCP_TOOLS: ReadonlyArray<string> = [
-  "transhipment", "finalizar_atendimento", "unresolvedProblem",
+  "transhipment",
+  "finalizar_atendimento",
+  "unresolvedProblem",
 ];
 
 /**
@@ -30,9 +35,7 @@ export const ORCHESTRATOR_ALLOWED_MCP_TOOLS: ReadonlyArray<string> = [
  * nos primeiros turnos e faz handoff para `triage` (triagem simples/central)
  * ou `process_info` (consulta de processo) quando o contexto fica claro.
  */
-function formatAgentesPersistidosHint(
-  specialistAgentNames: readonly string[],
-): string {
+function formatAgentesPersistidosHint(specialistAgentNames: readonly string[]): string {
   const parts = [
     "`orchestrator` (recepção)",
     "`triage` (triagem simples/central)",
@@ -171,9 +174,11 @@ export interface BuildOrchestratorAgentParams {
   readonly env: EnvConfig;
   readonly context: AgentRunContext;
   /**
-   * Quando `false`, a triagem central não expõe handoffs para especialistas
-   * (sem linhas em `triage_specialist_agents_config` ou não cliente com
-   * `whatsapp_numeros.triage_enabled` = false).
+   * Quando `false`, a triagem central usa **TRIAGE_AGENT_SIMPLE_INSTRUCTIONS** (sem handoffs
+   * para especialistas), inclusive se a org tiver especialistas ativos no banco — ex. contato
+   * **sem** `clientId` e `triage_enabled=false` em `whatsapp_numeros`. Com `clientId`, handoffs
+   * para especialistas dependem só de haver linhas ativas em `triage_specialist_agents_config`
+   * (ver `runAgents`).
    */
   readonly triageSpecialistHandoffs?: boolean;
   /** Especialistas ativos (`ativo=true`) para montar handoffs e texto do orquestrador. */
@@ -185,6 +190,65 @@ export interface BuildOrchestratorAgentParams {
   readonly fetchChatbotAiConfig?: FetchChatbotAiConfigFn;
 }
 
+function activeSpecialistsForOrchestrator(
+  rows: readonly ActiveTriageSpecialistRow[] | undefined,
+): readonly ActiveTriageSpecialistRow[] {
+  return rows ?? [];
+}
+
+/** `false` explícito desliga handoffs de triagem especialista; omitido = ligado na política do caller. */
+function triageSpecialistHandoffsEnabled(flag: boolean | undefined): boolean {
+  return flag !== false;
+}
+
+/** Nomes de agente (`identificador`) listados no prompt do orquestrador quando handoffs ativos. */
+function specialistAgentNamesForPrompt(
+  handoffsEnabled: boolean,
+  specialists: readonly ActiveTriageSpecialistRow[],
+): readonly string[] {
+  if (!handoffsEnabled || specialists.length === 0) {
+    return [];
+  }
+  return specialists.map((row) => row.agentName);
+}
+
+function buildOrchestratorLegisMcp(env: EnvConfig, context: AgentRunContext) {
+  return buildLegisMcpTool({
+    env,
+    context,
+    allowedTools: ORCHESTRATOR_ALLOWED_MCP_TOOLS,
+  });
+}
+
+/**
+ * Corpo base do orquestrador depende do contexto do turno; tom/vocabulário vêm do append por org.
+ */
+function createOrchestratorInstructionsResolver(
+  specialistNames: readonly string[],
+  env: EnvConfig,
+  chatbotOptions: { fetchChatbotAiConfig?: FetchChatbotAiConfigFn },
+) {
+  return async (runContext: RunContext, _agent: Agent): Promise<string> => {
+    const ctx = runContext.context as AgentRunContext;
+    const baseInstructions = buildOrchestratorInstructions(ctx, specialistNames);
+    return appendChatbotTomVocabToInstructions(baseInstructions, {
+      organizationId: ctx.organizationId,
+      env,
+      ...chatbotOptions,
+    });
+  };
+}
+
+function wrapOrchestratorHandoffs(
+  processInfoAgent: Agent<AgentRunContext>,
+  triageAgent: Agent<AgentRunContext>,
+) {
+  return [
+    handoff(processInfoAgent, { inputFilter: removeAllTools }),
+    handoff(triageAgent, { inputFilter: removeAllTools }),
+  ];
+}
+
 /**
  * Constrói o agente orquestrador com handoffs para `triage` e `process_info`.
  *
@@ -193,54 +257,38 @@ export interface BuildOrchestratorAgentParams {
  * inteira do que mutar agentes em cache.
  */
 export function buildOrchestratorAgent(params: BuildOrchestratorAgentParams) {
-  const specialists = params.activeTriageSpecialists ?? [];
-  const triageSpecialistHandoffs = params.triageSpecialistHandoffs !== false;
+  const specialists = activeSpecialistsForOrchestrator(params.activeTriageSpecialists);
+  const specialistHandoffsOn = triageSpecialistHandoffsEnabled(params.triageSpecialistHandoffs);
+  const chatbotOptions = pickOptionalFetchChatbotOptions(params.fetchChatbotAiConfig);
+
+  const specialistNames = specialistAgentNamesForPrompt(specialistHandoffsOn, specialists);
+
   const triageAgent = buildTriageAgent({
     env: params.env,
     context: params.context,
-    specialistHandoffs: triageSpecialistHandoffs,
+    specialistHandoffs: specialistHandoffsOn,
     activeTriageSpecialists: specialists,
-    ...(params.fetchChatbotAiConfig !== undefined
-      ? { fetchChatbotAiConfig: params.fetchChatbotAiConfig }
-      : {}),
+    ...chatbotOptions,
   });
-  const specialistNames =
-    triageSpecialistHandoffs && specialists.length > 0
-      ? specialists.map((s) => s.agentName)
-      : [];
+
   const processInfoAgent = buildProcessInfoAgent({
     env: params.env,
     context: params.context,
   });
 
-  const legisMcp = buildLegisMcpTool({
-    env: params.env,
-    context: params.context,
-    allowedTools: ORCHESTRATOR_ALLOWED_MCP_TOOLS,
-  });
+  const resolveInstructions = createOrchestratorInstructionsResolver(
+    specialistNames,
+    params.env,
+    chatbotOptions,
+  );
+
+  const legisMcp = buildOrchestratorLegisMcp(params.env, params.context);
 
   return Agent.create({
     name: ORCHESTRATOR_AGENT_NAME,
-    instructions: async (runContext) => {
-      const ctx = runContext.context as AgentRunContext;
-      const base = buildOrchestratorInstructions(ctx, specialistNames);
-      return appendChatbotTomVocabToInstructions(base, {
-        organizationId: ctx.organizationId,
-        env: params.env,
-        ...(params.fetchChatbotAiConfig !== undefined
-          ? { fetchChatbotAiConfig: params.fetchChatbotAiConfig }
-          : {}),
-      });
-    },
+    instructions: resolveInstructions,
     model: params.env.aiModel,
-    handoffs: [
-      handoff(processInfoAgent, {
-        inputFilter: removeAllTools,
-      }),
-      handoff(triageAgent, {
-        inputFilter: removeAllTools,
-      })
-    ],
+    handoffs: wrapOrchestratorHandoffs(processInfoAgent, triageAgent),
     tools: [legisMcp],
   });
 }
