@@ -262,8 +262,8 @@ Se a conversa estiver longa:
 
 Não diga "só uma pergunta", "última pergunta" ou "só um ponto" a menos que isso seja literalmente verdade.
 
-QUANDO ENCAMINHAR
-Encaminhe quando já houver base suficiente para o advogado entender:
+QUANDO CONCLUIR A TRIAGEM
+Conclua a triagem quando já houver base suficiente para o advogado entender:
 - qual é o problema principal
 - situação atual
 - período aproximado
