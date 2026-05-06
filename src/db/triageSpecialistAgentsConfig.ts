@@ -1,125 +1,186 @@
 import {
-  TRIAGE_TRABALHISTA_AGENT_NAME,
+  TRIAGE_SPECIALIST_AREA_SLUGS,
+  formatConhecimentoForPrompt,
   formatTriageSpecialistInstrucoesForPrompt,
-} from "../agents/instructions/triage-trabalhista.instructions.js";
+  isTriageSpecialistAreaSlug,
+  triageSpecialistAgentTechnicalName,
+  type TriageSpecialistAreaSlug,
+} from "../agents/instructions/triage-specialist.instructions.js";
 import type { EnvConfig } from "../config/env.js";
 import { getSupabaseClient } from "./client.js";
 
 interface CacheEntry {
-  /** Texto já formatado para o prompt (JSONB array → lista numerada, ou legado). */
-  value: string | null;
-  timestamp: number;
+  readonly value: ActiveTriageSpecialistRow[];
+  readonly timestamp: number;
 }
 
 const cache = new Map<string, CacheEntry>();
 const TTL_MS = 5 * 60 * 1000;
 
-function cacheKey(organizationId: string, nome: string): string {
-  return `${organizationId}::${nome}`;
+const promptContentCache = new Map<string, CacheEntryPromptContent>();
+interface CacheEntryPromptContent {
+  readonly value: TriageSpecialistPromptContent;
+  readonly timestamp: number;
+}
+
+/** Blocos de prompt carregados de `triage_specialist_agents_config` por org + `identificador`. */
+export interface TriageSpecialistPromptContent {
+  /** Coluna `conhecimento` → PERGUNTAS-REFERÊNCIA POR TEMA. */
+  readonly conhecimento: string | null;
+  /** Coluna `instrucoes` formatada → Instruções extras. */
+  readonly instrucoesFormatadas: string | null;
+}
+
+function orgCacheKey(organizationId: string): string {
+  return organizationId;
+}
+
+function promptContentCacheKey(organizationId: string, identificador: string): string {
+  return `${organizationId}::${identificador}`;
+}
+
+export interface ActiveTriageSpecialistRow {
+  /** Valor de `identificador` (slug, ex.: `trabalhista`). */
+  readonly areaSlug: TriageSpecialistAreaSlug;
+  /** Nome do agente no SDK (= `identificador`, ex.: `criminal`). */
+  readonly agentName: string;
 }
 
 /**
- * Indica se existe linha em `triage_specialist_agents_config` para a org com
- * `nome` = {@link TRIAGE_TRABALHISTA_AGENT_NAME} (único especialista de triagem
- * com handoff neste serviço).
- *
- * Usado com `triage_enabled` e vínculo de cliente para decidir se a triagem
- * central expõe handoff para o agente trabalhista.
+ * Lista especialistas de triagem **ativos** para a organização (`ativo = true`),
+ * com `identificador` em {@link TRIAGE_SPECIALIST_AREA_SLUGS}. Em duplicidade
+ * por identificador, mantém a linha mais recente por `atualizado_em`.
  */
-export async function organizationHasTriageSpecialistAgentsConfig(
+export async function getActiveTriageSpecialistsForOrganization(
   organizationId: string,
   env?: EnvConfig,
-): Promise<boolean> {
+): Promise<ActiveTriageSpecialistRow[]> {
   const supabase = getSupabaseClient(env);
   const { data, error } = await supabase
     .from("triage_specialist_agents_config")
-    .select("organization_id")
+    .select("identificador, atualizado_em")
     .eq("organization_id", organizationId)
-    .eq("nome", TRIAGE_TRABALHISTA_AGENT_NAME)
-    .limit(1);
+    .eq("ativo", true)
+    .in("identificador", [...TRIAGE_SPECIALIST_AREA_SLUGS])
+    .order("atualizado_em", { ascending: false });
 
   if (error) {
     console.warn(
-      `[triageSpecialistAgentsConfig] organizationHasTriageSpecialistAgentsConfig(${organizationId}): ${error.message}`,
+      `[triageSpecialistAgentsConfig] getActiveTriageSpecialistsForOrganization(${organizationId}): ${error.message}`,
     );
-    return false;
+    return [];
   }
 
-  return (data?.length ?? 0) > 0;
+  const seen = new Set<string>();
+  const rows: ActiveTriageSpecialistRow[] = [];
+  for (const row of data ?? []) {
+    const id =
+      typeof row.identificador === "string" ? row.identificador.trim().toLowerCase() : "";
+    if (!id || !isTriageSpecialistAreaSlug(id) || seen.has(id)) continue;
+    seen.add(id);
+    rows.push({
+      areaSlug: id,
+      agentName: triageSpecialistAgentTechnicalName(id),
+    });
+  }
+  return rows;
 }
 
 /**
- * Lê `instrucoes` em `triage_specialist_agents_config` para a org e o nome do
- * agente (ex.: `triage_trabalhista`). Retorna `null` se não houver linha,
- * erro de I/O ou conteúdo vazio após formatação.
- *
- * A coluna é JSONB: array de `{ data, texto }` vira lista numerada para o prompt;
- * string simples (legado) é repassada em trim.
- *
- * A tabela já existe no projeto (FK `organization_id` → `organizations`, etc.);
- * usamos `limit(1)` + `atualizado_em` desc para não depender de unique composto.
+ * Indica se a org tem ao menos um especialista de triagem ativo configurado.
  */
-export async function getTriageSpecialistInstrucoes(
+export async function organizationHasActiveTriageSpecialistAgents(
   organizationId: string,
-  nome: string,
   env?: EnvConfig,
-): Promise<string | null> {
+): Promise<boolean> {
+  const list = await getActiveTriageSpecialistsForOrganizationCached(organizationId, env);
+  return list.length > 0;
+}
+
+export async function getActiveTriageSpecialistsForOrganizationCached(
+  organizationId: string,
+  env?: EnvConfig,
+): Promise<ActiveTriageSpecialistRow[]> {
+  const key = orgCacheKey(organizationId);
+  const hit = cache.get(key);
+  if (hit && Date.now() - hit.timestamp < TTL_MS) {
+    return hit.value;
+  }
+  const value = await getActiveTriageSpecialistsForOrganization(organizationId, env);
+  cache.set(key, { value, timestamp: Date.now() });
+  return value;
+}
+
+/**
+ * Lê `conhecimento` e `instrucoes` para a org e o `identificador` do especialista
+ * (linha ativa mais recente). Campos vazios ou inválidos retornam `null` no slot correspondente.
+ */
+export async function getTriageSpecialistPromptContent(
+  organizationId: string,
+  identificador: string,
+  env?: EnvConfig,
+): Promise<TriageSpecialistPromptContent> {
   const supabase = getSupabaseClient(env);
   const { data, error } = await supabase
     .from("triage_specialist_agents_config")
-    .select("instrucoes")
+    .select("conhecimento, instrucoes")
     .eq("organization_id", organizationId)
-    .eq("nome", nome)
+    .eq("identificador", identificador)
+    .eq("ativo", true)
     .order("atualizado_em", { ascending: false })
     .limit(1);
 
   if (error) {
     console.warn(
-      `[triageSpecialistAgentsConfig] Falha ao buscar instruções (${organizationId}, ${nome}): ${error.message}`,
+      `[triageSpecialistAgentsConfig] Falha ao buscar conteúdo de prompt (${organizationId}, ${identificador}): ${error.message}`,
     );
-    return null;
+    return { conhecimento: null, instrucoesFormatadas: null };
   }
 
   const row = data?.[0];
-  const raw = row?.instrucoes;
-  return formatTriageSpecialistInstrucoesForPrompt(raw);
+  return {
+    conhecimento: formatConhecimentoForPrompt(row?.conhecimento),
+    instrucoesFormatadas: formatTriageSpecialistInstrucoesForPrompt(row?.instrucoes),
+  };
 }
 
 /**
- * Mesmo contrato de {@link getTriageSpecialistInstrucoes}, com cache em
- * memória por par org + nome (TTL {@link TTL_MS}).
+ * Mesmo contrato de {@link getTriageSpecialistPromptContent}, com cache em
+ * memória por par org + identificador (TTL {@link TTL_MS}).
  */
-export async function getTriageSpecialistInstrucoesCached(
+export async function getTriageSpecialistPromptContentCached(
   organizationId: string,
-  nome: string,
+  identificador: string,
   env?: EnvConfig,
-): Promise<string | null> {
-  const key = cacheKey(organizationId, nome);
-  const hit = cache.get(key);
+): Promise<TriageSpecialistPromptContent> {
+  const key = promptContentCacheKey(organizationId, identificador);
+  const hit = promptContentCache.get(key);
   if (hit && Date.now() - hit.timestamp < TTL_MS) {
     return hit.value;
   }
-  const value = await getTriageSpecialistInstrucoes(organizationId, nome, env);
-  cache.set(key, { value, timestamp: Date.now() });
+  const value = await getTriageSpecialistPromptContent(organizationId, identificador, env);
+  promptContentCache.set(key, { value, timestamp: Date.now() });
   return value;
 }
 
 /** Remove cache de uma org (opcional: após edição no back-office). */
 export function invalidateTriageSpecialistAgentsConfigCache(
   organizationId: string,
-  nome?: string,
+  identificador?: string,
 ): void {
-  if (nome !== undefined) {
-    cache.delete(cacheKey(organizationId, nome));
+  cache.delete(orgCacheKey(organizationId));
+  if (identificador !== undefined) {
+    promptContentCache.delete(promptContentCacheKey(organizationId, identificador));
     return;
   }
   const prefix = `${organizationId}::`;
-  for (const k of cache.keys()) {
-    if (k.startsWith(prefix)) cache.delete(k);
+  for (const k of promptContentCache.keys()) {
+    if (k.startsWith(prefix)) promptContentCache.delete(k);
   }
 }
 
 /** Uso restrito a testes. */
 export function __resetTriageSpecialistAgentsConfigCacheForTests(): void {
   cache.clear();
+  promptContentCache.clear();
 }

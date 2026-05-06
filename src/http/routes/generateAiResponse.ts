@@ -26,7 +26,14 @@ import type { AgentId, AgentInputItem } from "../../types.js";
 const AGENT_SYSTEM_LABEL: Record<AgentId, string> = {
   orchestrator: "recepção (orquestrador)",
   triage: "triagem simples",
-  triage_trabalhista: "triagem trabalhista",
+  criminal: "triagem criminal",
+  digital: "triagem digital",
+  previdenciario: "triagem previdenciária",
+  civil: "triagem cível",
+  familia: "triagem família",
+  empresarial: "triagem empresarial",
+  tributario: "triagem tributária",
+  trabalhista: "triagem trabalhista",
   process_info: "consulta processual",
 };
 

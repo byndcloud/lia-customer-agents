@@ -1,4 +1,8 @@
 import type { EnvConfig } from "../config/env.js";
+import {
+  isTriageSpecialistAreaSlug,
+  stripLegacyTriageSpecialistPrefix,
+} from "../agents/instructions/triage-specialist.instructions.js";
 import type { AgentId } from "../types.js";
 import { getSupabaseClient } from "./client.js";
 
@@ -17,19 +21,18 @@ export interface EnsureActiveServiceResult {
   agenteResponsavel: AgentId;
 }
 
-const KNOWN_AGENT_IDS = new Set<string>([
-  "orchestrator",
-  "triage",
-  "triage_trabalhista",
-  "process_info",
-]);
-
 /** Normaliza valor persistido em `agente_responsavel` para `AgentId`. */
 export function normalizeAgenteResponsavel(
   raw: string | null | undefined,
 ): AgentId {
-  if (raw && KNOWN_AGENT_IDS.has(raw)) {
-    return raw as AgentId;
+  if (!raw) return "orchestrator";
+  const t = raw.trim();
+  const norm = stripLegacyTriageSpecialistPrefix(t);
+  if (norm === "orchestrator" || norm === "triage" || norm === "process_info") {
+    return norm as AgentId;
+  }
+  if (isTriageSpecialistAreaSlug(norm)) {
+    return norm as AgentId;
   }
   return "orchestrator";
 }
@@ -45,7 +48,7 @@ export interface ActiveChatbotServiceRow {
   readonly atendimentoId: string;
   readonly iniciadoEm: string;
   /**
-   * `orchestrator` | `triage` | `triage_trabalhista` | `process_info`
+   * `orchestrator` | `triage` | `<identificador>` (triagem especialista) | `process_info`
    * — alinhado a `AgentId`.
    */
   readonly agenteResponsavel: AgentId;

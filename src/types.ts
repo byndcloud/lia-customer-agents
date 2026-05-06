@@ -1,17 +1,26 @@
 import { z } from "zod";
+import { stripLegacyTriageSpecialistPrefix } from "./agents/instructions/triage-specialist.instructions.js";
 
 /**
  * Identificadores dos agentes do fluxo principal.
  *
  * `orchestrator` — recepção / orquestrador (handoff para especialistas)
  * `triage` — triagem simples/central (fallback + roteamento)
- * `triage_trabalhista` — triagem especialista para Direito do Trabalho
+ * Especialistas de triagem — valor de `identificador` em `triage_specialist_agents_config`
+ * (ex.: `criminal`, `trabalhista`). Valores legados `triage_<slug>` são normalizados em leitura.
  * `process_info` — consulta a processos já existentes
  */
 export const AgentIdSchema = z.enum([
   "orchestrator",
   "triage",
-  "triage_trabalhista",
+  "criminal",
+  "digital",
+  "previdenciario",
+  "civil",
+  "familia",
+  "empresarial",
+  "tributario",
+  "trabalhista",
   "process_info",
 ]);
 export type AgentId = z.infer<typeof AgentIdSchema>;
@@ -84,7 +93,15 @@ export const RunInputSchema = z
      * `whatsapp_atendimentos.agente_responsavel`), usado nas instruções do
      * orquestrador para preferir re-handoff.
      */
-    agenteResponsavelAtendimento: AgentIdSchema.optional(),
+    agenteResponsavelAtendimento: z.preprocess(
+      (v) => {
+        if (v === undefined || v === null || v === "") return undefined;
+        if (typeof v !== "string") return v;
+        const t = v.trim();
+        return stripLegacyTriageSpecialistPrefix(t);
+      },
+      AgentIdSchema.optional(),
+    ),
   })
   .refine(
     (value) => Boolean(value.userMessage) || Boolean(value.inputs),

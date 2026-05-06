@@ -1,18 +1,21 @@
 import { RECOMMENDED_PROMPT_PREFIX } from "@openai/agents-core/extensions";
 import { describe, expect, it } from "vitest";
 import { buildTriageAgent } from "../src/agents/triage.agent.js";
-import { buildTriageTrabalhistaAgent } from "../src/agents/triage-trabalhista.agent.js";
+import { buildTriageSpecialistAgent } from "../src/agents/triage-specialist.agent.js";
 import {
   TRIAGE_AGENT_INSTRUCTIONS,
   TRIAGE_AGENT_SIMPLE_INSTRUCTIONS,
   buildTriageAgentInstructions,
+  type TriageActiveSpecialistForInstructions,
 } from "../src/agents/instructions/triage.instructions.js";
 import {
-  TRIAGE_TRABALHISTA_AGENT_INSTRUCTIONS,
-  buildTriageTrabalhistaInstructionsWithExtras,
+  TRIAGE_SPECIALIST_INSTRUCTIONS_NO_DB,
+  buildTriageSpecialistInstructionsWithExtras,
+  formatConhecimentoForPrompt,
   formatTriageSpecialistInstrucoesForPrompt,
-} from "../src/agents/instructions/triage-trabalhista.instructions.js";
+} from "../src/agents/instructions/triage-specialist.instructions.js";
 import type { EnvConfig } from "../src/config/env.js";
+import type { ActiveTriageSpecialistRow } from "../src/db/triageSpecialistAgentsConfig.js";
 import type { AgentRunContext } from "../src/types.js";
 
 const env: EnvConfig = {
@@ -30,12 +33,14 @@ const context: AgentRunContext = {
   agenteResponsavelAtendimento: undefined,
 };
 
-describe("TRIAGE_AGENT_INSTRUCTIONS — modo especialista (com handoffs)", () => {
-  it("posiciona orquestração para especialista antes das regras centrais", () => {
-    const orchIdx = TRIAGE_AGENT_INSTRUCTIONS.indexOf(
-      "REGRA CRÍTICA: ORQUESTRAÇÃO PARA ESPECIALISTA",
-    );
-    const afterOrchIdx = TRIAGE_AGENT_INSTRUCTIONS.indexOf("ESCOPO");
+describe("Triagem central — corpo de instruções (lista de especialistas vs. export sem default)", () => {
+  it("posiciona orquestração para especialista antes das regras centrais quando há lista ativa", () => {
+    const sample: TriageActiveSpecialistForInstructions[] = [
+      { areaSlug: "trabalhista", agentName: "trabalhista" },
+    ];
+    const body = buildTriageAgentInstructions(true, sample);
+    const orchIdx = body.indexOf("REGRA CRÍTICA: ORQUESTRAÇÃO PARA ESPECIALISTA");
+    const afterOrchIdx = body.indexOf("ESCOPO");
 
     expect(orchIdx).toBeGreaterThan(0);
     expect(afterOrchIdx).toBeGreaterThan(orchIdx);
@@ -47,9 +52,19 @@ describe("TRIAGE_AGENT_INSTRUCTIONS — modo especialista (com handoffs)", () =>
     expect(TRIAGE_AGENT_SIMPLE_INSTRUCTIONS).toContain('"Olá!"');
   });
 
-  it("orquestra handoff para especialista trabalhista e remove checklist detalhista", () => {
-    expect(TRIAGE_AGENT_INSTRUCTIONS).toContain("transfer_to_triage_trabalhista");
-    expect(TRIAGE_AGENT_INSTRUCTIONS).not.toContain("PERGUNTAS-REFERÊNCIA POR TEMA");
+  it("com especialistas na lista, inclui transfer_to_<slug> e remove checklist detalhista", () => {
+    const sample: TriageActiveSpecialistForInstructions[] = [
+      { areaSlug: "trabalhista", agentName: "trabalhista" },
+    ];
+    const body = buildTriageAgentInstructions(true, sample);
+    expect(body).toContain("transfer_to_trabalhista");
+    expect(body).not.toContain("PERGUNTAS-REFERÊNCIA POR TEMA");
+  });
+
+  it("TRIAGE_AGENT_INSTRUCTIONS exportada não assume slug de exemplo nem handoff", () => {
+    expect(TRIAGE_AGENT_INSTRUCTIONS).not.toContain("transfer_to_trabalhista");
+    expect(TRIAGE_AGENT_INSTRUCTIONS).toContain("não há");
+    expect(TRIAGE_AGENT_INSTRUCTIONS).toContain("triagens especialistas por área ativas");
   });
 });
 
@@ -77,10 +92,11 @@ describe("TRIAGE_AGENT_SIMPLE_INSTRUCTIONS — modo simples (sem handoffs)", () 
 const noChatbotAiConfig = async () => null;
 
 describe("buildTriageAgent", () => {
-  it("prepara as instruções com RECOMMENDED_PROMPT_PREFIX e mantém o corpo da triagem", async () => {
+  it("prepara as instruções com RECOMMENDED_PROMPT_PREFIX e modo simples sem especialistas", async () => {
     const agent = buildTriageAgent({
       env,
       context,
+      activeTriageSpecialists: [],
       fetchChatbotAiConfig: noChatbotAiConfig,
     });
 
@@ -90,10 +106,10 @@ describe("buildTriageAgent", () => {
     }) => Promise<string>)({ context });
     expect(text.startsWith(RECOMMENDED_PROMPT_PREFIX)).toBe(true);
     expect(text).toContain("## Contexto temporal (âncora do atendimento)");
-    expect(text).toContain(TRIAGE_AGENT_INSTRUCTIONS);
+    expect(text).toContain(TRIAGE_AGENT_SIMPLE_INSTRUCTIONS);
     expect(text).toContain("## Personalização (tom de voz e vocabulário)");
     expect(text).toContain("### ESTILO E FLUXO");
-    expect(agent.handoffs.length).toBe(1);
+    expect(agent.handoffs.length).toBe(0);
     expect(agent.tools.length).toBe(1);
   });
 
@@ -110,6 +126,21 @@ describe("buildTriageAgent", () => {
     expect(text).toContain(TRIAGE_AGENT_SIMPLE_INSTRUCTIONS);
     expect(text).not.toContain("REGRA CRÍTICA: ORQUESTRAÇÃO PARA ESPECIALISTA");
     expect(agent.handoffs.length).toBe(0);
+  });
+
+  it("com vários especialistas ativos, registra um handoff por área", () => {
+    const multi: ActiveTriageSpecialistRow[] = [
+      { areaSlug: "trabalhista", agentName: "trabalhista" },
+      { areaSlug: "criminal", agentName: "criminal" },
+    ];
+    const agent = buildTriageAgent({
+      env,
+      context,
+      specialistHandoffs: true,
+      activeTriageSpecialists: multi,
+      fetchChatbotAiConfig: noChatbotAiConfig,
+    });
+    expect(agent.handoffs.length).toBe(2);
   });
 
   it("anexa tom empático quando fetch de chatbot_ai_config retorna tom_voz empatico", async () => {
@@ -130,18 +161,21 @@ describe("buildTriageAgent", () => {
   });
 });
 
-describe("triage trabalhista especialista", () => {
-  it("mantém o escopo trabalhista detalhado", () => {
-    expect(TRIAGE_TRABALHISTA_AGENT_INSTRUCTIONS).toContain(
+describe("triage especialista (base compartilhada por área)", () => {
+  it("mantém o bloco PERGUNTAS-REFERÊNCIA quando configurado (ex.: vindo do banco)", () => {
+    expect(TRIAGE_SPECIALIST_INSTRUCTIONS_NO_DB).toContain(
       "PERGUNTAS-REFERÊNCIA POR TEMA",
     );
-    expect(TRIAGE_TRABALHISTA_AGENT_INSTRUCTIONS).toContain(
+    const comPerguntas = buildTriageSpecialistInstructionsWithExtras(
       "O escritório atende apenas Direito do Trabalho.",
+      null,
     );
+    expect(comPerguntas).toContain("O escritório atende apenas Direito do Trabalho.");
   });
 
   it("insere Instruções extras antes da regra de continuidade quando há texto", () => {
-    const withExtras = buildTriageTrabalhistaInstructionsWithExtras(
+    const withExtras = buildTriageSpecialistInstructionsWithExtras(
+      null,
       "sempre peça pro cliente seu nome completo",
     );
     expect(withExtras).toContain("## Instruções extras (definidas pelo escritório)");
@@ -164,9 +198,15 @@ describe("triage trabalhista especialista", () => {
         "3 - Incluir o link ao perguntar o endereço.",
       ].join("\n"),
     );
-    const withExtras = buildTriageTrabalhistaInstructionsWithExtras(formatted);
+    const withExtras = buildTriageSpecialistInstructionsWithExtras(null, formatted);
     expect(withExtras).toContain("1 - Perguntar sempre o nome completo do cliente.");
     expect(withExtras).toContain("3 - Incluir o link ao perguntar o endereço.");
+  });
+
+  it("formatConhecimentoForPrompt ignora vazio e não-string", () => {
+    expect(formatConhecimentoForPrompt(null)).toBeNull();
+    expect(formatConhecimentoForPrompt("   ")).toBeNull();
+    expect(formatConhecimentoForPrompt("  tema X  ")).toBe("tema X");
   });
 
   it("aceita string JSON com array (como serializado) e texto legado sem JSON", () => {
@@ -176,10 +216,14 @@ describe("triage trabalhista especialista", () => {
   });
 
   it("constrói agente com prefixo recomendado e tool MCP", async () => {
-    const agent = buildTriageTrabalhistaAgent({
+    const agent = buildTriageSpecialistAgent({
+      areaSlug: "trabalhista",
       env,
       context,
-      fetchTriageSpecialistInstrucoes: async () => null,
+      fetchTriageSpecialistPromptContent: async () => ({
+        conhecimento: null,
+        instrucoesFormatadas: null,
+      }),
       fetchChatbotAiConfig: noChatbotAiConfig,
     });
     expect(typeof agent.instructions).toBe("function");
@@ -187,29 +231,55 @@ describe("triage trabalhista especialista", () => {
       context: AgentRunContext;
     }) => Promise<string>)({ context });
     expect(text.startsWith(RECOMMENDED_PROMPT_PREFIX)).toBe(true);
-    expect(text).toContain(TRIAGE_TRABALHISTA_AGENT_INSTRUCTIONS);
+    expect(text).toContain(TRIAGE_SPECIALIST_INSTRUCTIONS_NO_DB);
     expect(agent.tools.length).toBe(1);
   });
 
-  it("hidrata Instruções extras quando o fetch retorna texto", async () => {
-    const agent = buildTriageTrabalhistaAgent({
+  it("hidrata PERGUNTAS-REFERÊNCIA a partir de conhecimento no fetch", async () => {
+    const agent = buildTriageSpecialistAgent({
+      areaSlug: "trabalhista",
       env,
       context,
-      fetchTriageSpecialistInstrucoes: async () => "  peça CPF  ",
+      fetchTriageSpecialistPromptContent: async () => ({
+        conhecimento: "  peça CPF  ",
+        instrucoesFormatadas: null,
+      }),
+      fetchChatbotAiConfig: noChatbotAiConfig,
+    });
+    const text = await (agent.instructions as (rc: {
+      context: AgentRunContext;
+    }) => Promise<string>)({ context });
+    expect(text).toContain("PERGUNTAS-REFERÊNCIA POR TEMA");
+    expect(text).toContain("peça CPF");
+  });
+
+  it("hidrata Instruções extras a partir de instrucoes formatadas no fetch", async () => {
+    const agent = buildTriageSpecialistAgent({
+      areaSlug: "trabalhista",
+      env,
+      context,
+      fetchTriageSpecialistPromptContent: async () => ({
+        conhecimento: null,
+        instrucoesFormatadas: "1 - Confirmar disponibilidade de agenda.",
+      }),
       fetchChatbotAiConfig: noChatbotAiConfig,
     });
     const text = await (agent.instructions as (rc: {
       context: AgentRunContext;
     }) => Promise<string>)({ context });
     expect(text).toContain("## Instruções extras (definidas pelo escritório)");
-    expect(text).toContain("peça CPF");
+    expect(text).toContain("1 - Confirmar disponibilidade de agenda.");
   });
 
   it("anexa bloco de personalização tom/vocabulário ao final", async () => {
-    const agent = buildTriageTrabalhistaAgent({
+    const agent = buildTriageSpecialistAgent({
+      areaSlug: "trabalhista",
       env,
       context,
-      fetchTriageSpecialistInstrucoes: async () => null,
+      fetchTriageSpecialistPromptContent: async () => ({
+        conhecimento: null,
+        instrucoesFormatadas: null,
+      }),
       fetchChatbotAiConfig: noChatbotAiConfig,
     });
     const text = await (agent.instructions as (rc: {

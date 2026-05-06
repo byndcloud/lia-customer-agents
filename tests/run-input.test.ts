@@ -29,12 +29,32 @@ describe("RunInputSchema", () => {
     expect(parsed.extra).toEqual({ clientName: "Maria" });
   });
 
-  it("accepts triage_trabalhista as persisted responsible agent", () => {
+  it("normaliza legado triage_criminal para criminal", () => {
+    const parsed = RunInputSchema.parse({
+      conversaId: "c1",
+      organizationId: "o1",
+      userMessage: "hi",
+      agenteResponsavelAtendimento: "triage_criminal",
+    });
+    expect(parsed.agenteResponsavelAtendimento).toBe("criminal");
+  });
+
+  it("aceita criminal e normaliza triage_trabalhista para trabalhista", () => {
     const parsed = RunInputSchema.parse({
       ...validInput,
       agenteResponsavelAtendimento: "triage_trabalhista",
     });
-    expect(parsed.agenteResponsavelAtendimento).toBe("triage_trabalhista");
+    expect(parsed.agenteResponsavelAtendimento).toBe("trabalhista");
+  });
+
+  it("accepts criminal as persisted responsible agent", () => {
+    const parsed = RunInputSchema.parse({
+      conversaId: "c1",
+      organizationId: "o1",
+      userMessage: "hi",
+      agenteResponsavelAtendimento: "criminal",
+    });
+    expect(parsed.agenteResponsavelAtendimento).toBe("criminal");
   });
 
   it("rejects an empty userMessage", () => {

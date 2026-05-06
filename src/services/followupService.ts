@@ -18,6 +18,7 @@ import {
   finalizarAtendimentosTransferidosFilaPorFollowup24hTriagem,
   getOpenAtendimentoAgenteResponsavelRaw,
 } from "../db/atendimentos.js";
+import { isPersistedTriageSpecialistAgentId } from "../agents/instructions/triage-specialist.instructions.js";
 import { sendEvolutionMessage } from "./evolutionApi.js";
 import { resolveWhatsAppInstance } from "./whatsappInstanceResolver.js";
 
@@ -363,7 +364,7 @@ async function gerarNotasFinalizacaoTriagemFollowup24h(
 /**
  * Processa conversas inativas há ~30 min: gera mensagem de "ainda precisa de
  * ajuda?" e marca `inactive_since` para evitar duplicação.
- * Com `agente_responsavel` `triage` ou `triage_trabalhista`, usa
+ * Com `agente_responsavel` `triage` ou identificador de triagem especialista (`criminal`, `trabalhista`, etc.), usa
  * `FOLLOWUP_30MIN_DEVELOPER_MSG_TRIAGE` em vez do prompt padrão.
  */
 export async function processFollowup30min(
@@ -443,7 +444,7 @@ export async function processFollowup30min(
         cfg,
       );
       const emTriagem =
-        agenteRaw === "triage" || agenteRaw === "triage_trabalhista";
+        agenteRaw === "triage" || isPersistedTriageSpecialistAgentId(agenteRaw);
       const developerMsg30 = emTriagem
         ? FOLLOWUP_30MIN_DEVELOPER_MSG_TRIAGE
         : FOLLOWUP_30MIN_DEVELOPER_MSG;
@@ -532,7 +533,7 @@ export async function processFollowup30min(
  * finaliza sem gerar nova mensagem (atendente humano assumiu).
  *
  * Se o atendimento aberto tiver `agente_responsavel` `triage` ou
- * `triage_trabalhista`, não encerra: finaliza o atendimento como transferido
+ * identificador de triagem especialista (`criminal`, `trabalhista`, etc.), não encerra: finaliza o atendimento como transferido
  * e define a conversa como `aguardando_atendimento` (fila humana).
  */
 export async function processFollowup24h(
@@ -574,7 +575,7 @@ export async function processFollowup24h(
         cfg,
       );
       const encaminharParaFilaTriagem =
-        agenteRaw === "triage" || agenteRaw === "triage_trabalhista";
+        agenteRaw === "triage" || isPersistedTriageSpecialistAgentId(agenteRaw);
 
       if (encaminharParaFilaTriagem) {
         try {

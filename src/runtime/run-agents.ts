@@ -13,10 +13,16 @@ import {
 } from "../agents/orchestrator.agent.js";
 import { PROCESS_INFO_AGENT_NAME } from "../agents/instructions/process-info.instructions.js";
 import { TRIAGE_AGENT_NAME } from "../agents/instructions/triage.instructions.js";
-import { TRIAGE_TRABALHISTA_AGENT_NAME } from "../agents/instructions/triage-trabalhista.instructions.js";
+import {
+  TRIAGE_SPECIALIST_AREA_SLUGS,
+  isTriageSpecialistAreaSlug,
+  stripLegacyTriageSpecialistPrefix,
+  triageSpecialistAgentTechnicalName,
+  triageSpecialistHandoffLabel,
+} from "../agents/instructions/triage-specialist.instructions.js";
 import { loadEnv, type EnvConfig } from "../config/env.js";
 import { getTriageEnabledForOrganization } from "../db/instances.js";
-import { organizationHasTriageSpecialistAgentsConfig } from "../db/triageSpecialistAgentsConfig.js";
+import { getActiveTriageSpecialistsForOrganizationCached } from "../db/triageSpecialistAgentsConfig.js";
 import {
   RunInputSchema,
   type AgentId,
@@ -49,12 +55,20 @@ interface PipelineCounts {
 }
 
 /** Nomes técnicos dos agentes traduzidos para apelidos lidos nos logs. */
-const AGENT_LABEL: Record<string, string> = {
-  [ORCHESTRATOR_AGENT_NAME]: "recepção",
-  [TRIAGE_AGENT_NAME]: "triagem simples",
-  [TRIAGE_TRABALHISTA_AGENT_NAME]: "triagem trabalhista",
-  [PROCESS_INFO_AGENT_NAME]: "consulta processual",
-};
+const AGENT_LABEL: Record<string, string> = (() => {
+  const base: Record<string, string> = {
+    [ORCHESTRATOR_AGENT_NAME]: "recepção",
+    [TRIAGE_AGENT_NAME]: "triagem simples",
+    [PROCESS_INFO_AGENT_NAME]: "consulta processual",
+  };
+  for (const slug of TRIAGE_SPECIALIST_AREA_SLUGS) {
+    const label = `triagem ${triageSpecialistHandoffLabel(slug)}`;
+    const n = triageSpecialistAgentTechnicalName(slug);
+    base[n] = label;
+    base[`triage_${slug}`] = label;
+  }
+  return base;
+})();
 
 function agentLabel(name: string | undefined | null): string {
   if (!name) return "desconhecido";
@@ -389,10 +403,12 @@ export async function runAgents(
   const runInput = normalizeRunInputForOpenAiResponsesModel(runInputRaw);
 
   const isClient = Boolean(input.clientId);
-  const [triageEnabled, hasSpecialistRows] = await Promise.all([
+  const [triageEnabled, activeTriageSpecialists] = await Promise.all([
     getTriageEnabledForOrganization(input.organizationId, env),
-    organizationHasTriageSpecialistAgentsConfig(input.organizationId, env),
+    getActiveTriageSpecialistsForOrganizationCached(input.organizationId, env),
   ]);
+
+  const hasSpecialistRows = activeTriageSpecialists.length > 0;
 
   const triageSpecialistHandoffs = isClient
     ? hasSpecialistRows
@@ -423,6 +439,7 @@ export async function runAgents(
     env,
     context,
     triageSpecialistHandoffs,
+    activeTriageSpecialists,
   });
 
   console.log("");
@@ -564,8 +581,19 @@ function resolveAgentUsed(lastAgentName: string | undefined): AgentId {
     return "triage";
   }
 
-  if (lastAgentName === TRIAGE_TRABALHISTA_AGENT_NAME) {
-    return "triage_trabalhista";
+  if (typeof lastAgentName === "string" && isTriageSpecialistAreaSlug(lastAgentName)) {
+    return lastAgentName as AgentId;
+  }
+
+  if (
+    typeof lastAgentName === "string" &&
+    lastAgentName.startsWith("triage_") &&
+    lastAgentName !== TRIAGE_AGENT_NAME
+  ) {
+    const slug = stripLegacyTriageSpecialistPrefix(lastAgentName);
+    if (isTriageSpecialistAreaSlug(slug)) {
+      return slug as AgentId;
+    }
   }
 
   if (lastAgentName === ORCHESTRATOR_AGENT_NAME) {

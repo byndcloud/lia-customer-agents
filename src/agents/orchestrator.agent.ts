@@ -1,6 +1,7 @@
 import { Agent, handoff } from "@openai/agents";
 import { RECOMMENDED_PROMPT_PREFIX } from "@openai/agents-core/extensions";
 import type { EnvConfig } from "../config/env.js";
+import type { ActiveTriageSpecialistRow } from "../db/triageSpecialistAgentsConfig.js";
 import { buildLegisMcpTool } from "../mcp/legis-mcp.js";
 import type { AgentRunContext } from "../types.js";
 import {
@@ -29,13 +30,27 @@ export const ORCHESTRATOR_ALLOWED_MCP_TOOLS: ReadonlyArray<string> = [
  * nos primeiros turnos e faz handoff para `triage` (triagem simples/central)
  * ou `process_info` (consulta de processo) quando o contexto fica claro.
  */
+function formatAgentesPersistidosHint(
+  specialistAgentNames: readonly string[],
+): string {
+  const parts = [
+    "`orchestrator` (recepção)",
+    "`triage` (triagem simples/central)",
+    ...specialistAgentNames.map((n) => `\`${n}\` (triagem especialista)`),
+    "`process_info` (consulta processual)",
+  ];
+  return parts.join(", ");
+}
+
 export function buildOrchestratorInstructions(
   ctx: AgentRunContext,
+  specialistAgentNames: readonly string[] = [],
 ): string {
   const clientLinked = Boolean(ctx.clientId);
   const agentePersistido = ctx.agenteResponsavelAtendimento;
+  const valores = formatAgentesPersistidosHint(specialistAgentNames);
   const agentePersistidoTexto = agentePersistido
-    ? `\`${agentePersistido}\` — use o histórico completo e a mensagem de sistema deste turno. Valores: \`orchestrator\` (recepção), \`triage\` (triagem simples), \`triage_trabalhista\` (triagem trabalhista), \`process_info\`.`
+    ? `\`${agentePersistido}\` — use o histórico completo e a mensagem de sistema deste turno. Valores possíveis neste fluxo: ${valores}.`
     : "(não informado — trate como recepção sem agente especialista persistido)";
 
   return `${RECOMMENDED_PROMPT_PREFIX}
@@ -97,7 +112,7 @@ Você pode ser invocada de novo a cada mensagem nova do cliente, **com o histór
 - Use o histórico para escolher **triage** vs **process_info** conforme o fio condutor mais recente: relato/avaliação de caso novo → triage; dúvida sobre processo já existente / número / status → process_info.
 
 ## Agente já responsável pelo atendimento (retomada)
-- Se a mensagem de sistema do turno e/ou o sinal acima indicam que **já existe um agente especialista por trás** (\`triage\`, \`triage_trabalhista\` ou \`process_info\` persistido), você deve **tender a fazer handoff de volta para o mesmo agente** na primeira oportunidade coerente com a **última mensagem do cliente**.
+- Se a mensagem de sistema do turno e/ou o sinal acima indicam que **já existe um agente especialista por trás** (\`triage\`, algum identificador de triagem especialista **ativo** nesta org — nome do agente = valor de \`identificador\` no banco, ex.: \`criminal\`, \`trabalhista\` —, ou \`process_info\` persistido), você deve **tender a fazer handoff de volta para o mesmo agente** na primeira oportunidade coerente com a **última mensagem do cliente**.
 - **Só** permaneça em recepção (sem handoff) ou escolha outro especialista quando a última mensagem do cliente estiver **claramente fora do escopo** do agente atual (ex.: estava em consulta processual e o cliente passou a relatar um caso trabalhista novo para triagem, ou o contrário de forma inequívoca).
 - Em caso de dúvida entre "mudou de assunto" vs "continuação natural", **prefira retomar o agente persistido** com handoff seco (sem texto), conforme as regras de handoff abaixo.
 
@@ -161,6 +176,8 @@ export interface BuildOrchestratorAgentParams {
    * `whatsapp_numeros.triage_enabled` = false).
    */
   readonly triageSpecialistHandoffs?: boolean;
+  /** Especialistas ativos (`ativo=true`) para montar handoffs e texto do orquestrador. */
+  readonly activeTriageSpecialists?: readonly ActiveTriageSpecialistRow[];
   /**
    * Resolver de `chatbot_ai_config` (tom + vocabulário nas instruções).
    * Produção: omitir e usar `getChatbotAiConfig`.
@@ -176,14 +193,21 @@ export interface BuildOrchestratorAgentParams {
  * inteira do que mutar agentes em cache.
  */
 export function buildOrchestratorAgent(params: BuildOrchestratorAgentParams) {
+  const specialists = params.activeTriageSpecialists ?? [];
+  const triageSpecialistHandoffs = params.triageSpecialistHandoffs !== false;
   const triageAgent = buildTriageAgent({
     env: params.env,
     context: params.context,
-    specialistHandoffs: params.triageSpecialistHandoffs !== false,
+    specialistHandoffs: triageSpecialistHandoffs,
+    activeTriageSpecialists: specialists,
     ...(params.fetchChatbotAiConfig !== undefined
       ? { fetchChatbotAiConfig: params.fetchChatbotAiConfig }
       : {}),
   });
+  const specialistNames =
+    triageSpecialistHandoffs && specialists.length > 0
+      ? specialists.map((s) => s.agentName)
+      : [];
   const processInfoAgent = buildProcessInfoAgent({
     env: params.env,
     context: params.context,
@@ -199,7 +223,7 @@ export function buildOrchestratorAgent(params: BuildOrchestratorAgentParams) {
     name: ORCHESTRATOR_AGENT_NAME,
     instructions: async (runContext) => {
       const ctx = runContext.context as AgentRunContext;
-      const base = buildOrchestratorInstructions(ctx);
+      const base = buildOrchestratorInstructions(ctx, specialistNames);
       return appendChatbotTomVocabToInstructions(base, {
         organizationId: ctx.organizationId,
         env: params.env,
