@@ -33,6 +33,7 @@ export {
 export { buildOrchestratorAgent } from "./agents/orchestrator.agent.js";
 export { buildTriageAgent } from "./agents/triage.agent.js";
 export { buildTriageTrabalhistaAgent } from "./agents/triage-trabalhista.agent.js";
+export { buildTriageSpecialistAgent } from "./agents/triage-specialist.agent.js";
 export { buildProcessInfoAgent } from "./agents/process-info.agent.js";
 
 export { buildApp, type BuildAppParams, type LiaHonoApp } from "./http/app.js";
